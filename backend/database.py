@@ -5,7 +5,7 @@ from config.settings import DATABASE_DIR
 
 
 def get_db():
-    """Retorna uma conexão com o banco de dados SQLite atual (por request)."""
+    """Retorna uma conexï¿½o com o banco de dados SQLite atual (por request)."""
     if "db" not in g:
         g.db = sqlite3.connect(
             DATABASE_DIR / "database.db",
@@ -17,7 +17,7 @@ def get_db():
 
 
 def close_db(e=None):
-    """Fecha a conexão com o banco de dados no final do request."""
+    """Fecha a conexï¿½o com o banco de dados no final do request."""
     db = g.pop("db", None)
     if db is not None:
         db.close()

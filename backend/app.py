@@ -12,7 +12,7 @@ from reportlab.pdfgen import canvas
 from werkzeug.utils import secure_filename
 
 from config.settings import DATABASE_DIR
-from database import close_db, get_db, init_db
+from backend.database import close_db, get_db, init_db
 
 logging.basicConfig(
     level=logging.INFO,

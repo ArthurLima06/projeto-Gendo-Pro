@@ -1,18 +1,23 @@
 import logging
 import os
+import re
 import sqlite3
+import unicodedata
 import uuid
 from datetime import datetime
 from io import BytesIO
+from urllib.parse import quote
 
 import pandas as pd
-from flask import Flask, abort, jsonify, render_template, request, send_file, send_from_directory, url_for
+from flask import Flask, abort, jsonify, request, send_file, send_from_directory, url_for
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from werkzeug.utils import secure_filename
 
 from config.settings import DATABASE_DIR
 from backend.database import close_db, get_db, init_db
+
+print("BACKEND SERVER STARTED")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +26,11 @@ logging.basicConfig(
 
 def create_app():
 
-    app = Flask(__name__, template_folder="templates", static_folder="static")
+    app = Flask(
+        __name__,
+        static_folder="static",
+        static_url_path="",
+    )
     app.logger.setLevel(logging.INFO)
     app.logger.info("Initializing Gendo Pro API at %s", datetime.utcnow().isoformat())
 
@@ -261,13 +270,6 @@ def create_app():
     def assets(filename):
         assets_dir = os.path.join(app.static_folder, "assets")
         return send_from_directory(assets_dir, filename)
-
-    @app.route("/", defaults={"path": ""})
-    @app.route("/<path:path>")
-    def serve_spa(path):
-        if path.startswith("api/") or path.startswith("static/") or path in {"favicon.ico", "robots.txt"}:
-            abort(404)
-        return render_template("index.html")
 
     # ----------------------
     # PACIENTES
@@ -1073,6 +1075,421 @@ def create_app():
         row = db.execute("SELECT * FROM registros WHERE id = ?", (new_id,)).fetchone()
         return jsonify({"success": True, "data": medical_record_row_to_payload(row)})
 
+    @app.route("/api/search", methods=["GET"])
+    def global_search():
+        print("SEARCH REQUEST RECEIVED:", request.args.get("q"))
+        raw_query = (request.args.get("q") or "").strip()
+        empty_payload = {
+            "patients": [],
+            "appointments": [],
+            "records": [],
+            "payments": [],
+            "reports": [],
+            "pages": [],
+        }
+        if not raw_query:
+            return jsonify(empty_payload)
+
+        db = get_db()
+
+        def normalize_text(value):
+            if value is None:
+                return ""
+            text = unicodedata.normalize("NFKD", str(value).strip().lower())
+            return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+        def escape_like(value):
+            return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+        db.create_function("normalize_text", 1, normalize_text)
+
+        def distinct_non_empty(values):
+            seen = set()
+            items = []
+            for value in values:
+                if not value:
+                    continue
+                if value in seen:
+                    continue
+                seen.add(value)
+                items.append(value)
+            return items
+
+        def build_search_terms(query):
+            normalized_query = normalize_text(query)
+            terms = [normalized_query]
+
+            if re.fullmatch(r"\d{1,2}/\d{1,2}", normalized_query):
+                day_raw, month_raw = normalized_query.split("/")
+                day = int(day_raw)
+                month = int(month_raw)
+                if 1 <= day <= 31 and 1 <= month <= 12:
+                    terms.extend(
+                        [
+                            f"{day:02d}/{month:02d}",
+                            f"-{month:02d}-{day:02d}",
+                        ]
+                    )
+
+            month_aliases = {
+                "janeiro": 1,
+                "jan": 1,
+                "fevereiro": 2,
+                "fev": 2,
+                "marco": 3,
+                "mar": 3,
+                "abril": 4,
+                "abr": 4,
+                "maio": 5,
+                "mai": 5,
+                "junho": 6,
+                "jun": 6,
+                "julho": 7,
+                "jul": 7,
+                "agosto": 8,
+                "ago": 8,
+                "setembro": 9,
+                "set": 9,
+                "outubro": 10,
+                "out": 10,
+                "novembro": 11,
+                "nov": 11,
+                "dezembro": 12,
+                "dez": 12,
+                "march": 3,
+                "april": 4,
+            }
+            month_number = month_aliases.get(normalized_query)
+            if month_number:
+                terms.extend(
+                    [
+                        f"-{month_number:02d}-",
+                        f"/{month_number:02d}",
+                    ]
+                )
+
+            if normalized_query in {"today", "hoje"}:
+                today = datetime.now()
+                terms.extend(
+                    [
+                        today.strftime("%Y-%m-%d"),
+                        today.strftime("%d/%m"),
+                        today.strftime("%Y"),
+                        f"-{today.strftime('%m')}-",
+                    ]
+                )
+
+            return distinct_non_empty(terms)
+
+        def build_like_where(columns, terms):
+            conditions = []
+            params = []
+            for column in columns:
+                normalized_column = f"normalize_text({column})"
+                for term in terms:
+                    conditions.append(f"{normalized_column} LIKE ? ESCAPE '\\'")
+                    params.append(f"%{escape_like(term)}%")
+            if not conditions:
+                return "1 = 0", []
+            return " OR ".join(conditions), params
+
+        def query_table_columns(table_name):
+            rows = db.execute(f"PRAGMA table_info({table_name})").fetchall()
+            return {row["name"] for row in rows}
+
+        def build_path(base_path, params=None):
+            if not params:
+                return base_path
+            query_parts = []
+            for key, value in params.items():
+                if value is None or str(value).strip() == "":
+                    continue
+                query_parts.append(f"{key}={quote(str(value))}")
+            if not query_parts:
+                return base_path
+            return f"{base_path}?{'&'.join(query_parts)}"
+
+        search_terms = build_search_terms(raw_query)
+        if not search_terms:
+            return jsonify(empty_payload)
+
+        table_columns = {
+            "pacientes": query_table_columns("pacientes"),
+            "agenda": query_table_columns("agenda"),
+            "registros": query_table_columns("registros"),
+            "financeiro": query_table_columns("financeiro"),
+        }
+
+        patients_columns = []
+        for col in ["nome", "telefone", "cpf", "email"]:
+            if col in table_columns["pacientes"]:
+                patients_columns.append(f"p.{col}")
+        patient_where, patient_params = build_like_where(patients_columns, search_terms)
+        patients_rows = db.execute(
+            f"""
+            SELECT p.id, p.nome, p.telefone, p.email
+            FROM pacientes p
+            WHERE {patient_where}
+            ORDER BY p.nome
+            LIMIT 10
+            """,
+            patient_params,
+        ).fetchall()
+
+        appointment_columns = ["p.nome"]
+        for col in ["data", "horario", "status"]:
+            if col in table_columns["agenda"]:
+                appointment_columns.append(f"a.{col}")
+        appointment_where, appointment_params = build_like_where(appointment_columns, search_terms)
+        appointments_rows = db.execute(
+            f"""
+            SELECT a.id, p.nome AS paciente_nome, a.data, a.horario, a.status
+            FROM agenda a
+            LEFT JOIN pacientes p ON p.id = a.paciente_id
+            WHERE {appointment_where}
+            ORDER BY a.data DESC, a.horario DESC
+            LIMIT 10
+            """,
+            appointment_params,
+        ).fetchall()
+
+        record_columns = []
+        for col in ["paciente_nome", "observacoes", "data"]:
+            if col in table_columns["registros"]:
+                record_columns.append(f"r.{col}")
+        record_where, record_params = build_like_where(record_columns, search_terms)
+        records_rows = db.execute(
+            f"""
+            SELECT r.id, r.paciente_nome, r.observacoes, r.data
+            FROM registros r
+            WHERE {record_where}
+            ORDER BY r.data DESC, r.created_at DESC
+            LIMIT 10
+            """,
+            record_params,
+        ).fetchall()
+
+        payment_columns = ["p.nome"]
+        for col in ["observacoes", "data", "status"]:
+            if col in table_columns["financeiro"]:
+                payment_columns.append(f"f.{col}")
+        if "valor" in table_columns["financeiro"]:
+            payment_columns.append("CAST(f.valor AS TEXT)")
+        payment_where, payment_params = build_like_where(payment_columns, search_terms)
+        payments_rows = db.execute(
+            f"""
+            SELECT f.id, p.nome AS paciente_nome, f.observacoes, f.data, f.status, f.valor
+            FROM financeiro f
+            LEFT JOIN pacientes p ON p.id = f.paciente_id
+            WHERE {payment_where}
+            ORDER BY f.data DESC, f.created_at DESC
+            LIMIT 10
+            """,
+            payment_params,
+        ).fetchall()
+
+        report_catalog_query = """
+            WITH report_catalog AS (
+                SELECT
+                    'patient-pdf' AS id,
+                    'Relatorio do Paciente' AS report_name,
+                    'PDF' AS report_type,
+                    COALESCE((SELECT SUBSTR(MAX(created_at), 1, 10) FROM pacientes), '') AS report_date,
+                    '/reports' AS report_path
+                UNION ALL
+                SELECT
+                    'patients-excel' AS id,
+                    'Exportacao de Pacientes' AS report_name,
+                    'Excel' AS report_type,
+                    COALESCE((SELECT SUBSTR(MAX(created_at), 1, 10) FROM pacientes), '') AS report_date,
+                    '/reports' AS report_path
+                UNION ALL
+                SELECT
+                    'appointments-excel' AS id,
+                    'Exportacao de Agenda' AS report_name,
+                    'Excel' AS report_type,
+                    COALESCE((SELECT MAX(data) FROM agenda), '') AS report_date,
+                    '/reports' AS report_path
+                UNION ALL
+                SELECT
+                    'financial-excel' AS id,
+                    'Exportacao Financeira' AS report_name,
+                    'Excel' AS report_type,
+                    COALESCE((SELECT MAX(data) FROM financeiro), '') AS report_date,
+                    '/reports' AS report_path
+            )
+        """
+        reports_where, report_params = build_like_where(
+            ["report_name", "report_type", "report_date"], search_terms
+        )
+        reports_rows = db.execute(
+            f"""
+            {report_catalog_query}
+            SELECT id, report_name, report_type, report_date, report_path
+            FROM report_catalog
+            WHERE {reports_where}
+            LIMIT 10
+            """,
+            report_params,
+        ).fetchall()
+
+        static_pages = [
+            {"id": "dashboard", "name": "Dashboard", "path": "/dashboard", "keywords": ["painel"]},
+            {
+                "id": "patient-registration",
+                "name": "Cadastro de Pacientes",
+                "path": "/patients/register",
+                "keywords": ["cadastro", "paciente", "registrar"],
+            },
+            {
+                "id": "scheduling",
+                "name": "Agendamento",
+                "path": "/scheduling",
+                "keywords": ["agenda", "consulta"],
+            },
+            {
+                "id": "records",
+                "name": "Prontuarios",
+                "path": "/records",
+                "keywords": ["registro", "historico"],
+            },
+            {
+                "id": "patients",
+                "name": "Lista de Pacientes",
+                "path": "/patients",
+                "keywords": ["pacientes", "lista"],
+            },
+            {
+                "id": "reports",
+                "name": "Relatorios",
+                "path": "/reports",
+                "keywords": ["exportar", "pdf", "excel"],
+            },
+            {
+                "id": "financial",
+                "name": "Financeiro",
+                "path": "/financial",
+                "keywords": ["pagamento", "faturamento"],
+            },
+        ]
+
+        page_results = []
+        for page in static_pages:
+            searchable = normalize_text(
+                " ".join([page["name"], page["path"], " ".join(page["keywords"])])
+            )
+            if any(term in searchable for term in search_terms):
+                page_results.append(
+                    {
+                        "id": page["id"],
+                        "name": page["name"],
+                        "type": "page",
+                        "path": page["path"],
+                        "extraInfo": "Navegacao do sistema",
+                    }
+                )
+        page_results = page_results[:10]
+
+        payload = {
+            "patients": [
+                {
+                    "id": row["id"],
+                    "name": row["nome"] or "Paciente",
+                    "type": "patient",
+                    "path": build_path(
+                        "/patients",
+                        {"search": raw_query, "patientId": row["id"]},
+                    ),
+                    "extraInfo": row["telefone"] or row["email"] or "",
+                }
+                for row in patients_rows
+            ],
+            "appointments": [
+                {
+                    "id": row["id"],
+                    "name": row["paciente_nome"] or "Agendamento",
+                    "type": "appointment",
+                    "path": build_path(
+                        "/scheduling",
+                        {
+                            "search": raw_query,
+                            "date": row["data"],
+                            "appointmentId": row["id"],
+                        },
+                    ),
+                    "extraInfo": " ".join(
+                        part
+                        for part in [
+                            row["data"] or "",
+                            row["horario"] or "",
+                            row["status"] or "",
+                        ]
+                        if part
+                    ),
+                }
+                for row in appointments_rows
+            ],
+            "records": [
+                {
+                    "id": row["id"],
+                    "name": row["paciente_nome"] or "Prontuario",
+                    "type": "record",
+                    "path": build_path(
+                        "/records",
+                        {"search": raw_query, "recordId": row["id"]},
+                    ),
+                    "extraInfo": " ".join(
+                        part
+                        for part in [row["data"] or "", row["observacoes"] or ""]
+                        if part
+                    ).strip(),
+                }
+                for row in records_rows
+            ],
+            "payments": [
+                {
+                    "id": row["id"],
+                    "name": row["observacoes"] or (row["paciente_nome"] or "Pagamento"),
+                    "type": "payment",
+                    "path": build_path(
+                        "/financial",
+                        {"search": raw_query, "paymentId": row["id"]},
+                    ),
+                    "extraInfo": " ".join(
+                        part
+                        for part in [
+                            row["paciente_nome"] or "",
+                            row["data"] or "",
+                            row["status"] or "",
+                            f"R$ {float(row['valor'] or 0):.2f}",
+                        ]
+                        if part
+                    ).strip(),
+                }
+                for row in payments_rows
+            ],
+            "reports": [
+                {
+                    "id": row["id"],
+                    "name": row["report_name"],
+                    "type": "report",
+                    "path": build_path(
+                        row["report_path"] or "/reports",
+                        {"search": raw_query, "reportId": row["id"]},
+                    ),
+                    "extraInfo": " ".join(
+                        part
+                        for part in [row["report_type"] or "", row["report_date"] or ""]
+                        if part
+                    ).strip(),
+                }
+                for row in reports_rows
+            ],
+            "pages": page_results,
+        }
+
+        return jsonify(payload)
+
     # ----------------------
     # RELATÓRIO / EXPORTAÇÕES
     # ----------------------
@@ -1286,6 +1703,16 @@ def create_app():
     @app.route("/api/health")
     def health():
         return jsonify({"status": "ok"})
+
+    @app.route("/", defaults={"path": ""})
+    @app.route("/<path:path>")
+    def serve_react_app(path):
+        static_folder = app.static_folder
+
+        if path != "" and os.path.exists(os.path.join(static_folder, path)):
+            return send_from_directory(static_folder, path)
+
+        return send_from_directory(static_folder, "index.html")
 
     @app.after_request
     def log_api_response(response):

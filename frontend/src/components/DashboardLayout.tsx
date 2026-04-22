@@ -1,10 +1,9 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import { Search } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { useLocation } from "react-router-dom";
 import UserProfileDropdown from "@/components/UserProfileDropdown";
 import NotificationsPanel from "@/components/NotificationsPanel";
+import GlobalSearch from "@/components/GlobalSearch";
 
 const pageTitles: Record<string, string> = {
   "/": "Painel",
@@ -31,12 +30,8 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
               <h1 className="text-lg font-semibold text-foreground">{title}</h1>
             </div>
             <div className="flex items-center gap-3">
-              <div className="hidden md:flex relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Buscar..."
-                  className="pl-9 w-64 h-9 bg-muted/50 border-transparent focus:border-border focus:bg-card"
-                />
+              <div className="hidden md:flex">
+                <GlobalSearch />
               </div>
               <NotificationsPanel />
               <UserProfileDropdown />

@@ -16,6 +16,7 @@ from werkzeug.utils import secure_filename
 
 from config.settings import DATABASE_DIR
 from backend.database import close_db, get_db, init_db
+from backend.routes import reports_bp
 
 print("BACKEND SERVER STARTED")
 
@@ -43,6 +44,8 @@ def create_app():
 
     with app.app_context():
         init_db()
+
+    app.register_blueprint(reports_bp)
 
     def row_to_dict(row):
         return dict(row) if row else None

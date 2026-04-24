@@ -124,9 +124,9 @@ const PatientRegistration = () => {
 
                 <FormField control={form.control} name="school" render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Escola</FormLabel>
+                    <FormLabel>Escolaridade</FormLabel>
                     <FormControl>
-                      <Input placeholder="Digite o nome da escola" {...field} />
+                      <Input placeholder="Digite o nível de escolaridade" {...field} />
                     </FormControl>
                   </FormItem>
                 )} />

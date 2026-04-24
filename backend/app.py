@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import os
 import re
 import sqlite3
@@ -85,13 +85,13 @@ def create_app():
             doc.drawString(margin, y, text)
             y -= size + 4
 
-        add_line(f"Relatório de evolução - {patient['nome']}", bold=True, size=16)
+        add_line(f"RelatÃ³rio de evoluÃ§Ã£o - {patient['nome']}", bold=True, size=16)
         add_line(f"Gerado em {datetime.utcnow().strftime('%d/%m/%Y %H:%M UTC')}", size=10)
         add_line("-", size=8)
         meta = [
             ("Idade", patient.get("idade")),
             ("Escola", patient.get("escola")),
-            ("Responsável", patient.get("responsavel")),
+            ("ResponsÃ¡vel", patient.get("responsavel")),
             ("Telefone", patient.get("telefone")),
             ("Email", patient.get("email")),
         ]
@@ -101,21 +101,21 @@ def create_app():
         add_line("-", size=8)
 
         doc.setFont("Helvetica-Bold", 12)
-        doc.drawString(margin, y, "Sessões registradas")
+        doc.drawString(margin, y, "SessÃµes registradas")
         y -= 24
 
         if not sessoes:
-            add_line("Nenhuma sessão registrada.", size=11)
+            add_line("Nenhuma sessÃ£o registrada.", size=11)
         else:
             for sess in sessoes:
                 if y < margin + 70:
                     doc.showPage()
                     y = height - margin
-                add_line(f"Data: {sess.get('data') or ''} | Atividade: {sess.get('atividade') or '—'}", bold=True)
-                add_line(f"Evolução: {sess.get('evolucao') or '—'}", size=10)
+                add_line(f"Data: {sess.get('data') or ''} | Atividade: {sess.get('atividade') or 'â€”'}", bold=True)
+                add_line(f"EvoluÃ§Ã£o: {sess.get('evolucao') or 'â€”'}", size=10)
                 notes = sess.get("observacoes")
                 if notes:
-                    add_line(f"Observações: {notes}", size=10)
+                    add_line(f"ObservaÃ§Ãµes: {notes}", size=10)
                 y -= 6
 
         doc.save()
@@ -125,7 +125,7 @@ def create_app():
     def json_payload():
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
-            abort(400, description="É necessário enviar um JSON válido.")
+            abort(400, description="Ã‰ necessÃ¡rio enviar um JSON vÃ¡lido.")
         return data
 
     def is_blank(value):
@@ -138,20 +138,20 @@ def create_app():
     def require_fields(data, fields):
         missing = [field for field in fields if is_blank(data.get(field))]
         if missing:
-            abort(400, description=f"Campos obrigatórios faltando: {', '.join(missing)}.")
+            abort(400, description=f"Campos obrigatÃ³rios faltando: {', '.join(missing)}.")
 
     def parse_float(field_name, value):
         if value is None or value == "":
-            abort(400, description=f"{field_name} é obrigatório.")
+            abort(400, description=f"{field_name} Ã© obrigatÃ³rio.")
         try:
             return float(value)
         except (TypeError, ValueError):
-            abort(400, description=f"{field_name} precisa ser numérico.")
+            abort(400, description=f"{field_name} precisa ser numÃ©rico.")
 
     def ensure_patient_exists(db, paciente_id):
         row = db.execute("SELECT 1 FROM pacientes WHERE id = ?", (paciente_id,)).fetchone()
         if row is None:
-            abort(400, description="Paciente não encontrado.")
+            abort(400, description="Paciente nÃ£o encontrado.")
 
     def fetch_patient_name(db, paciente_id):
         row = db.execute("SELECT nome FROM pacientes WHERE id = ?", (paciente_id,)).fetchone()
@@ -258,7 +258,7 @@ def create_app():
         return notification_id
 
     # ----------------------
-    # PÁGINAS HTML
+    # PÃGINAS HTML
     # ----------------------
 
     @app.route("/favicon.ico")
@@ -330,7 +330,7 @@ def create_app():
             "SELECT * FROM pacientes WHERE id = ?", (paciente_id,)
         ).fetchone()
         if row is None:
-            abort(404, description="Paciente não encontrado.")
+            abort(404, description="Paciente nÃ£o encontrado.")
         return jsonify(row_to_dict(row))
 
     @app.route("/api/pacientes/<paciente_id>", methods=["PATCH"])
@@ -349,7 +349,7 @@ def create_app():
 
         updates = {col: data[col] for col in allowed_columns if col in data}
         if not updates:
-            abort(400, description="Nenhum campo válido para atualização.")
+            abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
 
         set_clause = ", ".join(f"{col} = ?" for col in updates)
         params = list(updates.values()) + [paciente_id]
@@ -360,7 +360,7 @@ def create_app():
             params,
         )
         if cursor.rowcount == 0:
-            abort(404, description="Paciente não encontrado.")
+            abort(404, description="Paciente nÃ£o encontrado.")
         db.commit()
 
         return jsonify({"id": paciente_id})
@@ -370,7 +370,7 @@ def create_app():
         db = get_db()
         cursor = db.execute("DELETE FROM pacientes WHERE id = ?", (paciente_id,))
         if cursor.rowcount == 0:
-            abort(404, description="Paciente não encontrado.")
+            abort(404, description="Paciente nÃ£o encontrado.")
         db.commit()
         return "", 204
 
@@ -390,7 +390,7 @@ def create_app():
             try:
                 age_value = int(age_value)
             except (TypeError, ValueError):
-                abort(400, description="Idade precisa ser numérica.")
+                abort(400, description="Idade precisa ser numÃ©rica.")
         else:
             age_value = None
 
@@ -440,13 +440,13 @@ def create_app():
                         try:
                             value = int(value)
                         except (TypeError, ValueError):
-                            abort(400, description="Idade precisa ser numérica.")
+                            abort(400, description="Idade precisa ser numÃ©rica.")
                     else:
                         value = None
                 updates.append(f"{column} = ?")
                 params.append(value)
         if not updates:
-            abort(400, description="Nenhum campo válido para atualização.")
+            abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
         params.append(patient_id)
 
         db = get_db()
@@ -455,7 +455,7 @@ def create_app():
             params,
         )
         if cursor.rowcount == 0:
-            abort(404, description="Paciente não encontrado.")
+            abort(404, description="Paciente nÃ£o encontrado.")
         db.commit()
 
         patient = db.execute("SELECT * FROM pacientes WHERE id = ?", (patient_id,)).fetchone()
@@ -466,7 +466,7 @@ def create_app():
         db = get_db()
         cursor = db.execute("DELETE FROM pacientes WHERE id = ?", (patient_id,))
         if cursor.rowcount == 0:
-            abort(404, description="Paciente não encontrado.")
+            abort(404, description="Paciente nÃ£o encontrado.")
         db.commit()
         return jsonify({"success": True, "data": {"id": patient_id}})
 
@@ -528,7 +528,7 @@ def create_app():
             "SELECT * FROM agenda WHERE id = ?", (agenda_id,)
         ).fetchone()
         if row is None:
-            abort(404, description="Agendamento não encontrado.")
+            abort(404, description="Agendamento nÃ£o encontrado.")
         return jsonify(row_to_dict(row))
 
     @app.route("/api/agenda/<agenda_id>", methods=["PATCH"])
@@ -537,7 +537,7 @@ def create_app():
         allowed = ["paciente_id", "data", "horario", "status", "motivo", "profissional", "observacoes"]
         updates = {key: data[key] for key in allowed if key in data}
         if not updates:
-            abort(400, description="Nenhum campo válido para atualização.")
+            abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
 
         db = get_db()
         if "paciente_id" in updates:
@@ -551,7 +551,7 @@ def create_app():
             params,
         )
         if cursor.rowcount == 0:
-            abort(404, description="Agendamento não encontrado.")
+            abort(404, description="Agendamento nÃ£o encontrado.")
         db.commit()
 
         return jsonify({"id": agenda_id})
@@ -561,7 +561,7 @@ def create_app():
         db = get_db()
         cursor = db.execute("DELETE FROM agenda WHERE id = ?", (agenda_id,))
         if cursor.rowcount == 0:
-            abort(404, description="Agendamento não encontrado.")
+            abort(404, description="Agendamento nÃ£o encontrado.")
         db.commit()
         return "", 204
 
@@ -586,7 +586,7 @@ def create_app():
         db = get_db()
         patient = find_patient_by_name(db, data.get("patient"))
         if patient is None:
-            abort(400, description="Paciente não encontrado.")
+            abort(400, description="Paciente nÃ£o encontrado.")
 
         new_id = str(uuid.uuid4())
         db.execute(
@@ -610,7 +610,7 @@ def create_app():
         create_notification(
             db,
             "Novo agendamento",
-            f"{patient['nome']} às {data.get('time')} em {data.get('date')}",
+            f"{patient['nome']} Ã s {data.get('time')} em {data.get('date')}",
             linked_date=data.get("date"),
         )
         db.commit()
@@ -630,30 +630,113 @@ def create_app():
     @app.route("/api/appointments/<appointment_id>", methods=["PUT"])
     def update_appointment_v2(appointment_id):
         data = json_payload()
-        mapping = {
-            "patient": "paciente_id",
-            "date": "data",
-            "time": "horario",
-            "professional": "profissional",
+        db = get_db()
+
+        existing = db.execute(
+            """
+            SELECT id, paciente_id, data, horario, profissional
+            FROM agenda
+            WHERE id = ?
+            """,
+            (appointment_id,),
+        ).fetchone()
+        if existing is None:
+            abort(404, description="Agendamento não encontrado.")
+
+        updates = []
+        params = []
+
+        next_date = existing["data"]
+        next_time = existing["horario"]
+        next_professional = existing["profissional"]
+
+        if "patient_id" in data:
+            patient_id = data.get("patient_id")
+            if is_blank(patient_id):
+                abort(400, description="patient_id é obrigatório.")
+            ensure_patient_exists(db, patient_id)
+            updates.append("paciente_id = ?")
+            params.append(patient_id)
+        elif "patient" in data:
+            patient_name = data.get("patient")
+            if is_blank(patient_name):
+                abort(400, description="patient é obrigatório.")
+            patient = find_patient_by_name(db, patient_name)
+            if patient is None:
+                abort(400, description="Paciente não encontrado.")
+            updates.append("paciente_id = ?")
+            params.append(patient["id"])
+
+        if "date" in data:
+            if is_blank(data.get("date")):
+                abort(400, description="date é obrigatório.")
+            next_date = data.get("date")
+            updates.append("data = ?")
+            params.append(next_date)
+
+        if "time" in data:
+            if is_blank(data.get("time")):
+                abort(400, description="time é obrigatório.")
+            next_time = data.get("time")
+            updates.append("horario = ?")
+            params.append(next_time)
+
+        if "professional" in data:
+            next_professional = data.get("professional")
+            updates.append("profissional = ?")
+            params.append(next_professional)
+        elif "professional_id" in data:
+            next_professional = data.get("professional_id")
+            updates.append("profissional = ?")
+            params.append(next_professional)
+
+        optional_mapping = {
             "reason": "motivo",
             "notes": "observacoes",
             "status": "status",
         }
-        updates = []
-        params = []
-        db = get_db()
-        for field, column in mapping.items():
+        for field, column in optional_mapping.items():
             if field in data:
-                value = data[field]
-                if field == "patient":
-                    patient = find_patient_by_name(db, value)
-                    if patient is None:
-                        abort(400, description="Paciente não encontrado.")
-                    value = patient["id"]
                 updates.append(f"{column} = ?")
-                params.append(value)
+                params.append(data.get(field))
+
         if not updates:
             abort(400, description="Nenhum campo válido para atualização.")
+
+        if not is_blank(next_professional) and not is_blank(next_date) and not is_blank(next_time):
+            conflict_row = db.execute(
+                """
+                SELECT id
+                FROM agenda
+                WHERE id <> ?
+                  AND profissional = ?
+                  AND data = ?
+                  AND horario = ?
+                LIMIT 1
+                """,
+                (appointment_id, next_professional, next_date, next_time),
+            ).fetchone()
+            if conflict_row is not None:
+                app.logger.warning(
+                    "Appointment conflict on update %s -> professional=%s date=%s time=%s",
+                    appointment_id,
+                    next_professional,
+                    next_date,
+                    next_time,
+                )
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": {
+                                "code": "APPOINTMENT_CONFLICT",
+                                "message": "Já existe um agendamento para este profissional neste horário.",
+                            },
+                        }
+                    ),
+                    409,
+                )
+
         params.append(appointment_id)
 
         cursor = db.execute(
@@ -674,6 +757,14 @@ def create_app():
             (appointment_id,),
         ).fetchone()
 
+        app.logger.info(
+            "Appointment updated id=%s date=%s time=%s professional=%s",
+            appointment_id,
+            row["data"] if row else next_date,
+            row["horario"] if row else next_time,
+            row["profissional"] if row else next_professional,
+        )
+
         return jsonify({"success": True, "data": appointment_row_to_payload(row)})
 
     @app.route("/api/appointments/<appointment_id>", methods=["DELETE"])
@@ -681,12 +772,12 @@ def create_app():
         db = get_db()
         cursor = db.execute("DELETE FROM agenda WHERE id = ?", (appointment_id,))
         if cursor.rowcount == 0:
-            abort(404, description="Agendamento não encontrado.")
+            abort(404, description="Agendamento nÃ£o encontrado.")
         db.commit()
         return jsonify({"success": True, "data": {"id": appointment_id}})
 
     # ----------------------
-    # SESSÕES
+    # SESSÃ•ES
     # ----------------------
 
     @app.route("/api/sessoes", methods=["GET"])
@@ -741,7 +832,7 @@ def create_app():
             "SELECT * FROM sessoes WHERE id = ?", (sessao_id,)
         ).fetchone()
         if row is None:
-            abort(404, description="Sessão não encontrada.")
+            abort(404, description="SessÃ£o nÃ£o encontrada.")
         return jsonify(row_to_dict(row))
 
     @app.route("/api/sessoes/<sessao_id>", methods=["PATCH"])
@@ -750,7 +841,7 @@ def create_app():
         allowed = ["paciente_id", "data", "atividade", "observacoes", "evolucao"]
         updates = {key: data[key] for key in allowed if key in data}
         if not updates:
-            abort(400, description="Nenhum campo válido para atualização.")
+            abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
 
         db = get_db()
         if "paciente_id" in updates:
@@ -764,7 +855,7 @@ def create_app():
             params,
         )
         if cursor.rowcount == 0:
-            abort(404, description="Sessão não encontrada.")
+            abort(404, description="SessÃ£o nÃ£o encontrada.")
         db.commit()
 
         return jsonify({"id": sessao_id})
@@ -774,7 +865,7 @@ def create_app():
         db = get_db()
         cursor = db.execute("DELETE FROM sessoes WHERE id = ?", (sessao_id,))
         if cursor.rowcount == 0:
-            abort(404, description="Sessão não encontrada.")
+            abort(404, description="SessÃ£o nÃ£o encontrada.")
         db.commit()
         return "", 204
 
@@ -835,7 +926,7 @@ def create_app():
             "SELECT * FROM financeiro WHERE id = ?", (lancamento_id,)
         ).fetchone()
         if row is None:
-            abort(404, description="Lançamento não encontrado.")
+            abort(404, description="LanÃ§amento nÃ£o encontrado.")
         return jsonify(row_to_dict(row))
 
     @app.route("/api/financeiro/<lancamento_id>", methods=["PATCH"])
@@ -844,7 +935,7 @@ def create_app():
         allowed = ["paciente_id", "data", "valor", "status", "metodo_pagamento", "observacoes"]
         updates = {key: data[key] for key in allowed if key in data}
         if not updates:
-            abort(400, description="Nenhum campo válido para atualização.")
+            abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
 
         db = get_db()
         if "paciente_id" in updates:
@@ -861,7 +952,7 @@ def create_app():
             params,
         )
         if cursor.rowcount == 0:
-            abort(404, description="Lançamento não encontrado.")
+            abort(404, description="LanÃ§amento nÃ£o encontrado.")
         db.commit()
 
         return jsonify({"id": lancamento_id})
@@ -871,7 +962,7 @@ def create_app():
         db = get_db()
         cursor = db.execute("DELETE FROM financeiro WHERE id = ?", (lancamento_id,))
         if cursor.rowcount == 0:
-            abort(404, description="Lançamento não encontrado.")
+            abort(404, description="LanÃ§amento nÃ£o encontrado.")
         db.commit()
         return "", 204
 
@@ -896,7 +987,7 @@ def create_app():
         db = get_db()
         patient = find_patient_by_name(db, data.get("patient"))
         if patient is None:
-            abort(400, description="Paciente não encontrado.")
+            abort(400, description="Paciente nÃ£o encontrado.")
 
         amount_value = parse_float("amount", data.get("amount"))
         new_id = str(uuid.uuid4())
@@ -995,7 +1086,7 @@ def create_app():
             "SELECT * FROM registros WHERE id = ?", (registro_id,)
         ).fetchone()
         if row is None:
-            abort(404, description="Registro não encontrado.")
+            abort(404, description="Registro nÃ£o encontrado.")
         return jsonify(row_to_dict(row))
 
     @app.route("/api/registros/<registro_id>", methods=["PATCH"])
@@ -1004,7 +1095,7 @@ def create_app():
         allowed = ["paciente_id", "paciente_nome", "data", "hora", "observacoes"]
         updates = {key: data[key] for key in allowed if key in data}
         if not updates:
-            abort(400, description="Nenhum campo válido para atualização.")
+            abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
 
         db = get_db()
         if "paciente_id" in updates:
@@ -1020,7 +1111,7 @@ def create_app():
             params,
         )
         if cursor.rowcount == 0:
-            abort(404, description="Registro não encontrado.")
+            abort(404, description="Registro nÃ£o encontrado.")
         db.commit()
 
         return jsonify({"id": registro_id})
@@ -1030,7 +1121,7 @@ def create_app():
         db = get_db()
         cursor = db.execute("DELETE FROM registros WHERE id = ?", (registro_id,))
         if cursor.rowcount == 0:
-            abort(404, description="Registro não encontrado.")
+            abort(404, description="Registro nÃ£o encontrado.")
         db.commit()
         return "", 204
 
@@ -1054,7 +1145,7 @@ def create_app():
         db = get_db()
         patient = find_patient_by_name(db, data.get("patient"))
         if patient is None:
-            abort(400, description="Paciente não encontrado.")
+            abort(400, description="Paciente nÃ£o encontrado.")
 
         new_id = str(uuid.uuid4())
         db.execute(
@@ -1494,7 +1585,7 @@ def create_app():
         return jsonify(payload)
 
     # ----------------------
-    # RELATÓRIO / EXPORTAÇÕES
+    # RELATÃ“RIO / EXPORTAÃ‡Ã•ES
     # ----------------------
 
     @app.route("/api/relatorio_pdf/<paciente_id>")
@@ -1502,7 +1593,7 @@ def create_app():
         db = get_db()
         patient_row = db.execute("SELECT * FROM pacientes WHERE id = ?", (paciente_id,)).fetchone()
         if patient_row is None:
-            abort(404, description="Paciente não encontrado.")
+            abort(404, description="Paciente nÃ£o encontrado.")
         sessoes = db.execute(
             """
             SELECT data, atividade, observacoes, evolucao
@@ -1647,12 +1738,12 @@ def create_app():
 
         stats = [
             {"label": "Pacientes ativos", "value": str(total_patients), "icon": "Users", "change": "Atualizado hoje"},
-            {"label": "Agendamentos", "value": str(total_appointments), "icon": "CalendarDays", "change": "Últimos 7 dias"},
-            {"label": "Faturamento", "value": f"R$ {total_payments:,.2f}", "icon": "DollarSign", "change": "Este mês"},
-            {"label": "Relatórios", "value": "Disponível", "icon": "FileText", "change": "Pronto para exportar"},
+            {"label": "Agendamentos", "value": str(total_appointments), "icon": "CalendarDays", "change": "Ãšltimos 7 dias"},
+            {"label": "Faturamento", "value": f"R$ {total_payments:,.2f}", "icon": "DollarSign", "change": "Este mÃªs"},
+            {"label": "RelatÃ³rios", "value": "DisponÃ­vel", "icon": "FileText", "change": "Pronto para exportar"},
         ]
 
-        summary = f"{total_patients} pacientes cadastrados · {total_appointments} consultas agendadas"
+        summary = f"{total_patients} pacientes cadastrados Â· {total_appointments} consultas agendadas"
         return jsonify(
             {
                 "success": True,
@@ -1677,7 +1768,7 @@ def create_app():
         db = get_db()
         cursor = db.execute("UPDATE notifications SET read = 1 WHERE id = ?", (notification_id,))
         if cursor.rowcount == 0:
-            abort(404, description="Notificação não encontrada.")
+            abort(404, description="NotificaÃ§Ã£o nÃ£o encontrada.")
         db.commit()
         return jsonify({"success": True, "data": {"success": True}})
 
@@ -1693,7 +1784,7 @@ def create_app():
         db = get_db()
         row = db.execute("SELECT id, nome FROM pacientes ORDER BY created_at DESC LIMIT 1").fetchone()
         if row is None:
-            abort(400, description="Nenhum paciente cadastrado para gerar relatórios.")
+            abort(400, description="Nenhum paciente cadastrado para gerar relatÃ³rios.")
         filename = secure_filename(f"relatorio_{row['nome']}.pdf") or f"relatorio_{row['id']}.pdf"
         url = url_for("relatorio_pdf", paciente_id=row["id"])
         return jsonify({"success": True, "data": {"url": url, "filename": filename}})
@@ -1741,3 +1832,5 @@ if __name__ == "__main__":
     app.run(debug=True)
 
     
+
+

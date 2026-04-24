@@ -2,9 +2,12 @@ import { create } from "zustand";
 import {
   getAppointments as fetchAppointments,
   createAppointment as createAppointmentApi,
+  updateAppointment as updateAppointmentApi,
   deleteAppointment as deleteAppointmentApi,
+  type UpdateAppointmentPayload,
   type Appointment,
 } from "@/services/appointmentsService";
+import type { ApiResponse } from "@/services/api";
 
 const COLORS = [
   "bg-primary/15 border-l-primary text-primary",
@@ -21,6 +24,7 @@ interface AppointmentStore {
   selectedDate: string | null;
   fetchAppointments: () => Promise<void>;
   addAppointment: (appt: Omit<Appointment, "id" | "color">) => Promise<void>;
+  updateAppointment: (id: string, appt: UpdateAppointmentPayload) => Promise<ApiResponse<Appointment>>;
   removeAppointment: (id: string) => Promise<void>;
   setSelectedDate: (date: string | null) => void;
   getAppointmentsForDate: (date: string) => Appointment[];
@@ -57,6 +61,23 @@ export const useAppointmentStore = create<AppointmentStore>((set, get) => ({
         appointments: [...s.appointments, { ...res.data, color: res.data.color || color }],
       }));
     }
+  },
+
+  updateAppointment: async (id, appt) => {
+    const res = await updateAppointmentApi(id, appt);
+    if (res.success) {
+      set((state) => ({
+        appointments: state.appointments.map((item, index) => {
+          if (item.id !== id) return item;
+          const fallbackColor = COLORS[index % COLORS.length];
+          return {
+            ...res.data,
+            color: item.color || res.data.color || fallbackColor,
+          };
+        }),
+      }));
+    }
+    return res;
   },
 
   removeAppointment: async (id) => {

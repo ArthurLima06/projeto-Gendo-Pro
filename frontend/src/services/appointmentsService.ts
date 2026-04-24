@@ -20,6 +20,18 @@ export interface CreateAppointmentPayload {
   notes: string;
 }
 
+export interface UpdateAppointmentPayload {
+  patient?: string;
+  patient_id?: string;
+  date?: string;
+  time?: string;
+  professional?: string;
+  professional_id?: string;
+  reason?: string;
+  notes?: string;
+  status?: string;
+}
+
 export async function getAppointments(): Promise<ApiResponse<Appointment[]>> {
   return api.get<Appointment[]>("/appointments");
 }
@@ -32,7 +44,7 @@ export async function createAppointment(
 
 export async function updateAppointment(
   id: string,
-  data: Partial<CreateAppointmentPayload>
+  data: UpdateAppointmentPayload
 ): Promise<ApiResponse<Appointment>> {
   return api.put<Appointment>(`/appointments/${id}`, data);
 }

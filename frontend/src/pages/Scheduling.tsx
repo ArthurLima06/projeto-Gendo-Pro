@@ -12,6 +12,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { toast } from "@/hooks/use-toast";
 import { useAppointmentStore, type Appointment } from "@/stores/appointmentStore";
 import { getPatients, type Patient } from "@/services/patientsService";
+import EditAppointmentModal, { type EditAppointmentPayload } from "@/components/scheduling/EditAppointmentModal";
 import { useSearchParams } from "react-router-dom";
 
 const HOURS = Array.from({ length: 12 }, (_, i) => i + 8);
@@ -60,6 +61,8 @@ function isToday(d: Date) {
   return fmt(d) === fmt(new Date());
 }
 
+const PROFESSIONAL_OPTIONS = ["Dr. Silva", "Dr. Costa", "Dr. Santos"];
+
 const Scheduling = () => {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [searchParams] = useSearchParams();
@@ -83,8 +86,9 @@ const Scheduling = () => {
 
   // Detail popup
   const [selectedAppt, setSelectedAppt] = useState<Appointment | null>(null);
+  const [editingAppt, setEditingAppt] = useState<Appointment | null>(null);
 
-  const { appointments, addAppointment, removeAppointment, fetchAppointments } = useAppointmentStore();
+  const { appointments, addAppointment, updateAppointment, removeAppointment, fetchAppointments } = useAppointmentStore();
 
   useEffect(() => {
     fetchAppointments();
@@ -157,6 +161,32 @@ const Scheduling = () => {
     removeAppointment(id);
     setSelectedAppt(null);
     toast({ title: "Agendamento removido", description: "O agendamento foi excluído." });
+  };
+
+  const handleEditClick = () => {
+    if (!selectedAppt) return;
+    setEditingAppt(selectedAppt);
+    setSelectedAppt(null);
+  };
+
+  const handleSaveEdit = async (payload: EditAppointmentPayload) => {
+    if (!editingAppt) return;
+
+    const response = await updateAppointment(editingAppt.id, payload);
+    if (response.success) {
+      setEditingAppt(null);
+      toast({
+        title: "Agendamento atualizado com sucesso.",
+        description: "As alterações foram aplicadas no calendário.",
+      });
+      return;
+    }
+
+    toast({
+      title: "Erro ao atualizar agendamento",
+      description: response.error.message,
+      variant: "destructive",
+    });
   };
 
   const getEventsForDate = (date: string) => appointments.filter((a) => a.date === date);
@@ -314,9 +344,9 @@ const Scheduling = () => {
                 <Select value={formProfessional} onValueChange={setFormProfessional}>
                   <SelectTrigger><SelectValue placeholder="Selecionar profissional" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="Dr. Silva">Dr. Silva</SelectItem>
-                    <SelectItem value="Dr. Costa">Dr. Costa</SelectItem>
-                    <SelectItem value="Dr. Santos">Dr. Santos</SelectItem>
+                    {PROFESSIONAL_OPTIONS.map((professionalName) => (
+                      <SelectItem key={professionalName} value={professionalName}>{professionalName}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -435,7 +465,7 @@ const Scheduling = () => {
                   )}
                 </div>
                 <div className="flex gap-2 pt-1">
-                  <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={() => setSelectedAppt(null)}>
+                  <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={handleEditClick}>
                     <Pencil className="h-3 w-3" /> Editar
                   </Button>
                   <Button variant="destructive" size="sm" className="flex-1 gap-1" onClick={() => handleDelete(selectedAppt.id)}>
@@ -447,6 +477,15 @@ const Scheduling = () => {
           )}
         </Card>
       </div>
+
+      <EditAppointmentModal
+        open={Boolean(editingAppt)}
+        appointment={editingAppt}
+        patients={patients}
+        professionals={PROFESSIONAL_OPTIONS}
+        onCancel={() => setEditingAppt(null)}
+        onSave={handleSaveEdit}
+      />
     </div>
   );
 };

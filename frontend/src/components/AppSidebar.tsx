@@ -12,6 +12,7 @@ import gendoLogo from "@/assets/gendo-logo.png";
 import { NavLink } from "@/components/NavLink";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { useEffect } from "react";
 import {
   Sidebar,
   SidebarContent,
@@ -35,11 +36,20 @@ const items = [
 ];
 
 export function AppSidebar() {
-  const { state } = useSidebar();
+  const { state, isMobile, setOpenMobile } = useSidebar();
   const collapsed = state === "collapsed";
   const location = useLocation();
   const navigate = useNavigate();
   const { logout } = useAuth();
+
+  const normalizePath = (path: string) => (path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path);
+  const isRouteActive = (path: string) => normalizePath(location.pathname) === normalizePath(path);
+
+  useEffect(() => {
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+  }, [isMobile, location.pathname, setOpenMobile]);
 
   const handleLogout = () => {
     logout();
@@ -61,10 +71,7 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {items.map((item) => {
-                const isActive =
-                  item.url === "/"
-                    ? location.pathname === "/"
-                    : location.pathname.startsWith(item.url);
+                const isActive = isRouteActive(item.url);
                 return (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton
@@ -74,18 +81,18 @@ export function AppSidebar() {
                     >
                       <NavLink
                         to={item.url}
-                        end={item.url === "/"}
-                        className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        end
+                        className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 ease-out transform-gpu ${
                           isActive
-                            ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                            : "text-sidebar-foreground hover:bg-muted"
+                            ? "bg-blue-500/15 text-blue-500 translate-x-1"
+                            : "text-sidebar-foreground hover:bg-white/5 hover:translate-x-0.5"
                         }`}
                         activeClassName=""
                       >
                         {isActive && (
-                          <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-primary" />
+                          <span className="absolute left-0 top-1/2 h-[60%] w-[3px] -translate-y-1/2 rounded-r bg-blue-500" />
                         )}
-                        <item.icon className={`h-4 w-4 shrink-0 ${isActive ? "text-primary" : "text-muted-foreground"}`} />
+                        <item.icon className={`h-4 w-4 shrink-0 ${isActive ? "text-blue-500" : "text-muted-foreground"}`} />
                         {!collapsed && <span>{item.title}</span>}
                       </NavLink>
                     </SidebarMenuButton>

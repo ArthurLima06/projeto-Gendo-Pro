@@ -137,7 +137,7 @@ const UserProfileDropdown = () => {
 
       {/* Settings Modal — compact */}
       <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="sm:max-w-md max-h-[85vh] flex flex-col p-0">
+        <DialogContent className="modal-config sm:max-w-md max-h-[85vh] flex flex-col p-0">
           <DialogHeader className="px-6 pt-5 pb-3">
             <DialogTitle className="flex items-center gap-2 text-base">
               <Settings className="h-4 w-4" />
@@ -145,7 +145,7 @@ const UserProfileDropdown = () => {
             </DialogTitle>
           </DialogHeader>
 
-          <ScrollArea className="flex-1 px-6 pb-5">
+          <ScrollArea className="flex-1 px-6 pb-6">
             <div className="space-y-4">
               {/* Account Info */}
               <div className="space-y-2">
@@ -154,10 +154,6 @@ const UserProfileDropdown = () => {
                   Informações da conta
                 </h4>
                 <div className="grid gap-2">
-                  <div>
-                    <Label className="text-xs text-muted-foreground">Nome</Label>
-                    <Input value="Gendo Pro" readOnly className="mt-1 h-8 text-sm bg-muted/50" />
-                  </div>
                   <div>
                     <Label className="text-xs text-muted-foreground">E-mail</Label>
                     <Input value={displayEmail} readOnly className="mt-1 h-8 text-sm bg-muted/50" />

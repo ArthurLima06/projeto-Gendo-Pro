@@ -31,3 +31,7 @@ def init_db():
         raise FileNotFoundError(f"Schema file not found: {schema_path}")
     with schema_path.open("r", encoding="utf-8") as f:
         db.executescript(f.read())
+    agenda_columns = {row["name"] for row in db.execute("PRAGMA table_info(agenda)").fetchall()}
+    if "duracao" not in agenda_columns:
+        db.execute("ALTER TABLE agenda ADD COLUMN duracao INTEGER NOT NULL DEFAULT 60")
+    db.commit()

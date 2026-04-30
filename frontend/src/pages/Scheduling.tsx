@@ -1,302 +1,536 @@
-import { useState, useMemo, useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ChevronLeft, ChevronRight, Loader2, X, Pencil, Trash2, CalendarDays } from "lucide-react";
-import { useSimulatedLoading } from "@/hooks/useSimulatedLoading";
 import { Skeleton } from "@/components/ui/skeleton";
-import { EmptyState } from "@/components/EmptyState";
+import { useSimulatedLoading } from "@/hooks/useSimulatedLoading";
 import { toast } from "@/hooks/use-toast";
-import { useAppointmentStore, type Appointment } from "@/stores/appointmentStore";
 import { getPatients, type Patient } from "@/services/patientsService";
-import EditAppointmentModal, { type EditAppointmentPayload } from "@/components/scheduling/EditAppointmentModal";
-import { useSearchParams } from "react-router-dom";
-
-const HOURS = Array.from({ length: 12 }, (_, i) => i + 8);
-const DAY_NAMES_SHORT = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
-const MONTH_NAMES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
-
-function getWeekDays(ref: Date): Date[] {
-  const d = new Date(ref);
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day; // start on Monday
-  const monday = new Date(d);
-  monday.setDate(d.getDate() + diff);
-  return Array.from({ length: 7 }, (_, i) => {
-    const dd = new Date(monday);
-    dd.setDate(monday.getDate() + i);
-    return dd;
-  });
-}
-
-function getMonthGrid(year: number, month: number): (Date | null)[][] {
-  const first = new Date(year, month, 1);
-  const last = new Date(year, month + 1, 0);
-  const startDay = first.getDay() === 0 ? 6 : first.getDay() - 1; // Monday = 0
-  const rows: (Date | null)[][] = [];
-  let current = 0;
-  for (let w = 0; w < 6; w++) {
-    const row: (Date | null)[] = [];
-    for (let d = 0; d < 7; d++) {
-      const idx = w * 7 + d - startDay;
-      if (idx >= 0 && idx < last.getDate()) {
-        row.push(new Date(year, month, idx + 1));
-      } else {
-        row.push(null);
-      }
-    }
-    if (row.some((d) => d !== null)) rows.push(row);
-  }
-  return rows;
-}
-
-function fmt(d: Date) {
-  return d.toISOString().split("T")[0];
-}
-
-function isToday(d: Date) {
-  return fmt(d) === fmt(new Date());
-}
+import { useAppointmentStore, type Appointment } from "@/stores/appointmentStore";
+import CalendarGrid from "@/components/scheduling/calendar/CalendarGrid";
+import EventModal, { type EventModalSubmitPayload } from "@/components/scheduling/calendar/EventModal";
+import EventPreviewCard from "@/components/scheduling/calendar/EventPreviewCard";
+import {
+  buildMonthPeriodLabel,
+  buildWeekPeriodLabel,
+  clampDuration,
+  DEFAULT_DURATION_MINUTES,
+  fmtDateKey,
+  formatDatePtBr,
+  formatHourAndMinute,
+  getAppointmentRenderData,
+  getEventColorClass,
+  getMonthGrid,
+  getWeekDays,
+  isToday,
+  roundTimeToFiveMinutes,
+  roundToNearestFive,
+  type AppointmentRenderData,
+} from "@/components/scheduling/calendar/calendarUtils";
 
 const PROFESSIONAL_OPTIONS = ["Dr. Silva", "Dr. Costa", "Dr. Santos"];
+
+type ModalMode = "create" | "edit";
+
+interface ModalSeed {
+  date: string;
+  time: string;
+  durationMinutes: number;
+}
+
+interface PreviewState {
+  appointment: Appointment;
+  position: { x: number; y: number };
+}
+
+interface ResizeState {
+  appointment: Appointment;
+  startY: number;
+  startDurationMinutes: number;
+}
 
 const Scheduling = () => {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [searchParams] = useSearchParams();
   const focusDateParam = searchParams.get("date");
+  const isLoading = useSimulatedLoading(900);
 
   const [view, setView] = useState<"week" | "month">("week");
   const [refDate, setRefDate] = useState(() => {
-    if (focusDateParam) return new Date(focusDateParam + "T12:00:00");
+    if (focusDateParam) {
+      return new Date(`${focusDateParam}T12:00:00`);
+    }
     return new Date();
   });
-  const [isScheduling, setIsScheduling] = useState(false);
-  const isLoading = useSimulatedLoading(900);
 
-  // Form state
   const [formPatient, setFormPatient] = useState("");
   const [formDate, setFormDate] = useState("");
   const [formTime, setFormTime] = useState("");
+  const [formDuration, setFormDuration] = useState(DEFAULT_DURATION_MINUTES);
   const [formProfessional, setFormProfessional] = useState("");
   const [formReason, setFormReason] = useState("");
   const [formNotes, setFormNotes] = useState("");
+  const [isScheduling, setIsScheduling] = useState(false);
 
-  // Detail popup
-  const [selectedAppt, setSelectedAppt] = useState<Appointment | null>(null);
-  const [editingAppt, setEditingAppt] = useState<Appointment | null>(null);
+  const [durationById, setDurationById] = useState<Record<string, number>>({});
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<ModalMode>("create");
+  const [editingAppointment, setEditingAppointment] = useState<Appointment | null>(null);
+  const [modalSeed, setModalSeed] = useState<ModalSeed>({
+    date: "",
+    time: "",
+    durationMinutes: DEFAULT_DURATION_MINUTES,
+  });
+
+  const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [selectedAppointmentId, setSelectedAppointmentId] = useState<string | null>(null);
+  const [resizeState, setResizeState] = useState<ResizeState | null>(null);
+
+  const previewOpenTimerRef = useRef<number | null>(null);
+  const previewCloseTimerRef = useRef<number | null>(null);
 
   const { appointments, addAppointment, updateAppointment, removeAppointment, fetchAppointments } = useAppointmentStore();
 
   useEffect(() => {
     fetchAppointments();
     const loadPatients = async () => {
-      const res = await getPatients();
-      if (res.success) setPatients(res.data);
+      const response = await getPatients();
+      if (response.success) {
+        setPatients(response.data);
+      }
     };
     loadPatients();
-  }, []);
+  }, [fetchAppointments]);
 
-  const weekDays = useMemo(() => getWeekDays(refDate), [refDate.toISOString()]);
-  const monthGrid = useMemo(() => getMonthGrid(refDate.getFullYear(), refDate.getMonth()), [refDate.getFullYear(), refDate.getMonth()]);
-
-  const navigate = (dir: number) => {
-    setRefDate((prev) => {
-      const d = new Date(prev);
-      if (view === "week") d.setDate(d.getDate() + dir * 7);
-      else d.setMonth(d.getMonth() + dir);
-      return d;
+  useEffect(() => {
+    setDurationById((prev) => {
+      const next = { ...prev };
+      let didChange = false;
+      for (const appointment of appointments) {
+        if (!next[appointment.id]) {
+          next[appointment.id] = clampDuration(appointment.duration || DEFAULT_DURATION_MINUTES);
+          didChange = true;
+        }
+      }
+      return didChange ? next : prev;
     });
-  };
+  }, [appointments]);
+
+  useEffect(
+    () => () => {
+      if (previewOpenTimerRef.current) {
+        window.clearTimeout(previewOpenTimerRef.current);
+      }
+      if (previewCloseTimerRef.current) {
+        window.clearTimeout(previewCloseTimerRef.current);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!resizeState) {
+      return;
+    }
+
+    const currentAppointmentId = resizeState.appointment.id;
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const deltaPixels = event.clientY - resizeState.startY;
+      const deltaMinutes = roundToNearestFive((deltaPixels / 52) * 60);
+      const nextDuration = clampDuration(resizeState.startDurationMinutes + deltaMinutes);
+      setDurationById((prev) => ({
+        ...prev,
+        [currentAppointmentId]: nextDuration,
+      }));
+    };
+
+    const handleMouseUp = () => {
+      setResizeState(null);
+      toast({
+        title: "Duracao atualizada",
+        description: "A duracao visual do evento foi ajustada no calendario.",
+      });
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [resizeState]);
+
+  const weekDays = useMemo(() => getWeekDays(refDate), [refDate]);
+  const monthGrid = useMemo(
+    () => getMonthGrid(refDate.getFullYear(), refDate.getMonth()),
+    [refDate]
+  );
 
   const periodLabel = useMemo(() => {
     if (view === "week") {
-      const s = weekDays[0];
-      const e = weekDays[6];
-      const sDay = s.getDate();
-      const eDay = e.getDate();
-      const sMonth = s.toLocaleDateString("pt-BR", { month: "short" }).replace(".", "");
-      const eMonth = e.toLocaleDateString("pt-BR", { month: "short" }).replace(".", "");
-      if (s.getMonth() === e.getMonth()) {
-        return `${sDay} – ${eDay} ${sMonth}, ${s.getFullYear()}`;
-      }
-      return `${sDay} ${sMonth} – ${eDay} ${eMonth}, ${e.getFullYear()}`;
+      return buildWeekPeriodLabel(weekDays);
     }
-    return `${MONTH_NAMES[refDate.getMonth()]} ${refDate.getFullYear()}`;
-  }, [view, refDate.toISOString(), weekDays]);
+    return buildMonthPeriodLabel(refDate);
+  }, [view, weekDays, refDate]);
 
-  const handleSchedule = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const patientOptions = useMemo(() => {
+    return [...patients].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+  }, [patients]);
+
+  const appointmentsByDate = useMemo(() => {
+    const grouped: Record<string, AppointmentRenderData[]> = {};
+    for (const appointment of appointments) {
+      const date = appointment.date;
+      const durationMinutes = durationById[appointment.id] || DEFAULT_DURATION_MINUTES;
+      const renderData = getAppointmentRenderData(appointment, durationMinutes);
+      if (!grouped[date]) {
+        grouped[date] = [];
+      }
+      grouped[date].push(renderData);
+    }
+
+    for (const date of Object.keys(grouped)) {
+      grouped[date].sort((a, b) => a.startMinutes - b.startMinutes);
+    }
+
+    return grouped;
+  }, [appointments, durationById]);
+
+  const clearPreviewTimers = () => {
+    if (previewOpenTimerRef.current) {
+      window.clearTimeout(previewOpenTimerRef.current);
+      previewOpenTimerRef.current = null;
+    }
+    if (previewCloseTimerRef.current) {
+      window.clearTimeout(previewCloseTimerRef.current);
+      previewCloseTimerRef.current = null;
+    }
+  };
+
+  const closePreview = () => {
+    clearPreviewTimers();
+    setPreview(null);
+  };
+
+  const openCreateModal = (seed: ModalSeed) => {
+    setModalMode("create");
+    setEditingAppointment(null);
+    setModalSeed(seed);
+    setModalOpen(true);
+    setSelectedAppointmentId(null);
+  };
+
+  const openEditModal = (appointment: Appointment) => {
+    closePreview();
+    setModalMode("edit");
+    setEditingAppointment(appointment);
+    setModalSeed({
+      date: appointment.date,
+      time: appointment.time.slice(0, 5),
+      durationMinutes: durationById[appointment.id] || DEFAULT_DURATION_MINUTES,
+    });
+    setModalOpen(true);
+    setSelectedAppointmentId(appointment.id);
+  };
+
+  const getCurrentRoundedTime = () => {
+    const now = new Date();
+    return roundTimeToFiveMinutes(now.getHours(), now.getMinutes());
+  };
+
+  const handleCreateFromEmptyCell = (date: string, hour: number, minute: number) => {
+    closePreview();
+    const roundedMinute = roundToNearestFive(minute);
+    const dateTime = new Date(`${date}T00:00:00`);
+    dateTime.setHours(hour, 0, 0, 0);
+    dateTime.setMinutes(roundedMinute);
+    openCreateModal({
+      date: fmtDateKey(dateTime),
+      time: formatHourAndMinute(dateTime.getHours(), dateTime.getMinutes()),
+      durationMinutes: DEFAULT_DURATION_MINUTES,
+    });
+  };
+
+  const handleSidebarSchedule = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
     if (!formPatient || !formDate || !formTime) {
-      toast({ title: "Preencha os campos obrigatórios", description: "Paciente, data e horário são obrigatórios.", variant: "destructive" });
+      toast({
+        title: "Preencha os campos obrigatorios",
+        description: "Paciente, data e horario sao obrigatorios.",
+        variant: "destructive",
+      });
       return;
     }
+
     setIsScheduling(true);
     try {
-      await addAppointment({
+      const created = await addAppointment({
         patient: formPatient,
         date: formDate,
         time: formTime,
         professional: formProfessional,
         reason: formReason,
         notes: formNotes,
+        duration: clampDuration(formDuration),
       });
+
+      if (created) {
+        const persistedDuration = clampDuration(created.duration || formDuration);
+        setDurationById((prev) => ({
+          ...prev,
+          [created.id]: persistedDuration,
+        }));
+      }
+
       setFormPatient("");
       setFormDate("");
       setFormTime("");
+      setFormDuration(DEFAULT_DURATION_MINUTES);
       setFormProfessional("");
       setFormReason("");
       setFormNotes("");
-      toast({ title: "Consulta agendada", description: "O agendamento foi criado com sucesso." });
+      toast({
+        title: "Consulta agendada",
+        description: "O agendamento foi criado com sucesso.",
+      });
     } catch {
-      toast({ title: "Erro ao agendar consulta", variant: "destructive" });
+      toast({
+        title: "Erro ao agendar consulta",
+        variant: "destructive",
+      });
     } finally {
       setIsScheduling(false);
     }
   };
 
-  const handleDelete = (id: string) => {
-    removeAppointment(id);
-    setSelectedAppt(null);
-    toast({ title: "Agendamento removido", description: "O agendamento foi excluído." });
-  };
+  const handleModalSave = async (payload: EventModalSubmitPayload) => {
+    if (modalMode === "create") {
+      const created = await addAppointment({
+        patient: payload.patient,
+        date: payload.date,
+        time: payload.time,
+        professional: payload.professional,
+        reason: payload.reason,
+        notes: payload.notes,
+        duration: payload.durationMinutes,
+      });
 
-  const handleEditClick = () => {
-    if (!selectedAppt) return;
-    setEditingAppt(selectedAppt);
-    setSelectedAppt(null);
-  };
+      if (!created) {
+        toast({
+          title: "Erro ao agendar consulta",
+          variant: "destructive",
+        });
+        return;
+      }
 
-  const handleSaveEdit = async (payload: EditAppointmentPayload) => {
-    if (!editingAppt) return;
-
-    const response = await updateAppointment(editingAppt.id, payload);
-    if (response.success) {
-      setEditingAppt(null);
+      setDurationById((prev) => ({
+        ...prev,
+        [created.id]: clampDuration(created.duration || payload.durationMinutes),
+      }));
+      setModalOpen(false);
       toast({
-        title: "Agendamento atualizado com sucesso.",
-        description: "As alterações foram aplicadas no calendário.",
+        title: "Consulta agendada",
+        description: "O agendamento foi criado com sucesso.",
+      });
+      return;
+    }
+
+    if (!editingAppointment) {
+      return;
+    }
+
+    const response = await updateAppointment(editingAppointment.id, {
+      patient: payload.patient,
+      patient_id: payload.patient_id,
+      date: payload.date,
+      time: payload.time,
+      professional: payload.professional,
+      professional_id: payload.professional_id,
+      reason: payload.reason,
+      notes: payload.notes,
+      duration: payload.durationMinutes,
+    });
+
+    if (!response.success) {
+      toast({
+        title: "Erro ao atualizar agendamento",
+        description: response.error.message,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setDurationById((prev) => ({
+      ...prev,
+      [editingAppointment.id]: payload.durationMinutes,
+    }));
+
+    setModalOpen(false);
+    setEditingAppointment(null);
+    toast({
+      title: "Agendamento atualizado com sucesso.",
+      description: "As alteracoes foram aplicadas no calendario.",
+    });
+  };
+
+  const handleDeleteAppointment = async (appointment: Appointment) => {
+    await removeAppointment(appointment.id);
+    closePreview();
+    if (editingAppointment?.id === appointment.id) {
+      setEditingAppointment(null);
+      setModalOpen(false);
+    }
+    setSelectedAppointmentId((current) => (current === appointment.id ? null : current));
+    toast({
+      title: "Agendamento removido",
+      description: "O agendamento foi excluido.",
+    });
+  };
+
+  const handleDragDrop = async (
+    appointmentId: string,
+    date: string,
+    hour: number,
+    minute: number
+  ) => {
+    const normalizedMinute = roundToNearestFive(minute);
+    const dateTime = new Date(`${date}T00:00:00`);
+    dateTime.setHours(hour, 0, 0, 0);
+    dateTime.setMinutes(normalizedMinute);
+    const finalDate = fmtDateKey(dateTime);
+    const nextTime = formatHourAndMinute(dateTime.getHours(), dateTime.getMinutes());
+    const current = appointments.find((item) => item.id === appointmentId);
+    if (!current) {
+      return;
+    }
+
+    if (current.date === finalDate && current.time.slice(0, 5) === nextTime) {
+      return;
+    }
+
+    const response = await updateAppointment(appointmentId, {
+      date: finalDate,
+      time: nextTime,
+    });
+
+    if (response.success) {
+      toast({
+        title: "Agendamento atualizado",
+        description: `Novo horario: ${formatDatePtBr(finalDate)} as ${nextTime}.`,
       });
       return;
     }
 
     toast({
-      title: "Erro ao atualizar agendamento",
+      title: "Erro ao mover agendamento",
       description: response.error.message,
       variant: "destructive",
     });
   };
 
-  const getEventsForDate = (date: string) => appointments.filter((a) => a.date === date);
-
-  // --- Week view ---
-  const renderWeekView = () => {
-    const hasAnyEvents = weekDays.some((d) => getEventsForDate(fmt(d)).length > 0);
-
-    return (
-      <div className="overflow-x-auto">
-        <div className="min-w-[640px]">
-          <div className="grid grid-cols-[60px_repeat(7,1fr)] border-b border-border">
-            <div className="p-2" />
-            {weekDays.map((d, i) => (
-              <div key={i} className={`p-3 text-center border-l border-border ${isToday(d) ? "bg-primary/5" : ""}`}>
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  {DAY_NAMES_SHORT[d.getDay()]}
-                </span>
-                <p className={`text-lg font-semibold mt-0.5 ${isToday(d) ? "text-primary" : ""}`}>
-                  {d.getDate()}
-                </p>
-              </div>
-            ))}
-          </div>
-          {HOURS.map((hour) => (
-            <div key={hour} className="grid grid-cols-[60px_repeat(7,1fr)] border-b border-border last:border-0">
-              <div className="p-2 text-right pr-3">
-                <span className="text-xs text-muted-foreground tabular-nums">
-                  {String(hour).padStart(2, "0")}:00
-                </span>
-              </div>
-              {weekDays.map((d, dayIdx) => {
-                const dateStr = fmt(d);
-                const events = getEventsForDate(dateStr).filter(
-                  (e) => parseInt(e.time.split(":")[0]) === hour
-                );
-                return (
-                  <div
-                    key={dayIdx}
-                    className={`border-l border-border min-h-[48px] p-1 hover:bg-muted/30 transition-colors cursor-pointer ${isToday(d) ? "bg-primary/[0.02]" : ""}`}
-                  >
-                    {events.map((event) => (
-                      <div
-                        key={event.id}
-                        onClick={() => setSelectedAppt(event)}
-                        className={`rounded-md border-l-[3px] px-2 py-1.5 text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${event.color}`}
-                      >
-                        <span className="block truncate">{event.patient}</span>
-                        <span className="block text-[10px] opacity-70">{event.time}</span>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
-          {!hasAnyEvents && (
-            <div className="py-12">
-              <EmptyState
-                icon={CalendarDays}
-                title="Nenhum agendamento encontrado"
-                description="Nenhuma consulta agendada para esta semana."
-              />
-            </div>
-          )}
-        </div>
-      </div>
-    );
+  const handleHoverStart = (appointment: Appointment, rect: DOMRect) => {
+    clearPreviewTimers();
+    previewOpenTimerRef.current = window.setTimeout(() => {
+      setPreview({
+        appointment,
+        position: {
+          x: rect.right + 10,
+          y: rect.top - 4,
+        },
+      });
+    }, 150);
   };
 
-  // --- Month view ---
+  const handleHoverEnd = () => {
+    if (previewOpenTimerRef.current) {
+      window.clearTimeout(previewOpenTimerRef.current);
+      previewOpenTimerRef.current = null;
+    }
+    previewCloseTimerRef.current = window.setTimeout(() => {
+      setPreview(null);
+    }, 120);
+  };
+
+  const navigate = (direction: number) => {
+    setRefDate((previous) => {
+      const next = new Date(previous);
+      if (view === "week") {
+        next.setDate(next.getDate() + direction * 7);
+      } else {
+        next.setMonth(next.getMonth() + direction);
+      }
+      return next;
+    });
+  };
+
   const renderMonthView = () => {
     return (
       <div className="overflow-x-auto">
-        <div className="min-w-[640px]">
+        <div className="min-w-[740px]">
           <div className="grid grid-cols-7 border-b border-border">
-            {["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"].map((d) => (
-              <div key={d} className="p-2 text-center border-l border-border first:border-l-0">
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{d}</span>
+            {["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"].map((dayLabel) => (
+              <div key={dayLabel} className="border-l border-border p-2 text-center first:border-l-0">
+                <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{dayLabel}</span>
               </div>
             ))}
           </div>
-          {monthGrid.map((week, wi) => (
-            <div key={wi} className="grid grid-cols-7 border-b border-border last:border-0">
-              {week.map((day, di) => {
+          {monthGrid.map((week, weekIndex) => (
+            <div key={weekIndex} className="grid grid-cols-7 border-b border-border last:border-0">
+              {week.map((day, dayIndex) => {
                 if (!day) {
-                  return <div key={di} className="border-l border-border first:border-l-0 min-h-[80px] bg-muted/20" />;
+                  return (
+                    <div
+                      key={`${weekIndex}-${dayIndex}-empty`}
+                      className="min-h-[92px] border-l border-border bg-muted/20 first:border-l-0"
+                    />
+                  );
                 }
-                const dateStr = fmt(day);
-                const events = getEventsForDate(dateStr);
+
+                const date = fmtDateKey(day);
+                const dayEvents = appointmentsByDate[date] || [];
+
                 return (
                   <div
-                    key={di}
-                    className={`border-l border-border first:border-l-0 min-h-[80px] p-1 hover:bg-muted/30 transition-colors ${isToday(day) ? "bg-primary/5" : ""}`}
+                    key={`${weekIndex}-${dayIndex}-${date}`}
+                    className={`min-h-[92px] border-l border-border p-1 transition-colors hover:bg-muted/30 first:border-l-0 ${
+                      isToday(day) ? "bg-primary/5" : ""
+                    }`}
+                    onClick={() =>
+                      openCreateModal({
+                        date,
+                        time: getCurrentRoundedTime(),
+                        durationMinutes: DEFAULT_DURATION_MINUTES,
+                      })
+                    }
                   >
-                    <span className={`text-xs font-medium ${isToday(day) ? "text-primary font-bold" : "text-muted-foreground"}`}>
+                    <span className={`text-xs font-medium ${isToday(day) ? "font-bold text-primary" : "text-muted-foreground"}`}>
                       {day.getDate()}
                     </span>
                     <div className="mt-1 space-y-0.5">
-                      {events.slice(0, 3).map((event) => (
+                      {dayEvents.slice(0, 3).map((eventData) => (
                         <div
-                          key={event.id}
-                          onClick={() => setSelectedAppt(event)}
-                          className={`rounded px-1 py-0.5 text-[10px] font-medium truncate cursor-pointer hover:opacity-80 ${event.color}`}
+                          key={eventData.appointment.id}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openEditModal(eventData.appointment);
+                          }}
+                          className={`cursor-pointer truncate rounded px-1 py-0.5 text-[10px] font-medium transition-opacity hover:opacity-80 ${getEventColorClass(eventData.appointment)}`}
                         >
-                          {event.time} {event.patient}
+                          {eventData.appointment.time} {eventData.appointment.patient}
                         </div>
                       ))}
-                      {events.length > 3 && (
-                        <span className="text-[10px] text-muted-foreground">+{events.length - 3} mais</span>
+                      {dayEvents.length > 3 && (
+                        <span className="text-[10px] text-muted-foreground">
+                          +{dayEvents.length - 3} mais
+                        </span>
                       )}
                     </div>
                   </div>
@@ -311,20 +545,24 @@ const Scheduling = () => {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        <Card className="shadow-card border-border xl:col-span-1">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+        <Card className="border-border shadow-card xl:col-span-1">
           <CardHeader>
             <CardTitle className="text-base font-semibold">Agendar Consulta</CardTitle>
           </CardHeader>
           <CardContent>
-            <form className="space-y-4" onSubmit={handleSchedule}>
+            <form className="space-y-4" onSubmit={handleSidebarSchedule}>
               <div className="space-y-2">
                 <Label>Paciente</Label>
                 <Select value={formPatient} onValueChange={setFormPatient}>
-                  <SelectTrigger><SelectValue placeholder="Selecionar paciente" /></SelectTrigger>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecionar paciente" />
+                  </SelectTrigger>
                   <SelectContent>
-                    {patients.map((p) => (
-                      <SelectItem key={p.id} value={p.name}>{p.name}</SelectItem>
+                    {patientOptions.map((patient) => (
+                      <SelectItem key={patient.id} value={patient.name}>
+                        {patient.name}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -332,31 +570,59 @@ const Scheduling = () => {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Data</Label>
-                  <Input type="date" value={formDate} onChange={(e) => setFormDate(e.target.value)} />
+                  <Input type="date" value={formDate} onChange={(event) => setFormDate(event.target.value)} />
                 </div>
                 <div className="space-y-2">
-                  <Label>Horário</Label>
-                  <Input type="time" value={formTime} onChange={(e) => setFormTime(e.target.value)} />
+                  <Label>Horario</Label>
+                  <Input type="time" value={formTime} onChange={(event) => setFormTime(event.target.value)} />
                 </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Duracao</Label>
+                <Select value={String(formDuration)} onValueChange={(value) => setFormDuration(Number.parseInt(value, 10))}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecionar duracao" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="15">15 min</SelectItem>
+                    <SelectItem value="30">30 min</SelectItem>
+                    <SelectItem value="45">45 min</SelectItem>
+                    <SelectItem value="60">1 hora</SelectItem>
+                    <SelectItem value="90">1h 30min</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label>Profissional</Label>
                 <Select value={formProfessional} onValueChange={setFormProfessional}>
-                  <SelectTrigger><SelectValue placeholder="Selecionar profissional" /></SelectTrigger>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecionar profissional" />
+                  </SelectTrigger>
                   <SelectContent>
-                    {PROFESSIONAL_OPTIONS.map((professionalName) => (
-                      <SelectItem key={professionalName} value={professionalName}>{professionalName}</SelectItem>
+                    {PROFESSIONAL_OPTIONS.map((professional) => (
+                      <SelectItem key={professional} value={professional}>
+                        {professional}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
                 <Label>Motivo</Label>
-                <Input placeholder="Motivo da consulta" value={formReason} onChange={(e) => setFormReason(e.target.value)} />
+                <Input
+                  placeholder="Motivo da consulta"
+                  value={formReason}
+                  onChange={(event) => setFormReason(event.target.value)}
+                />
               </div>
               <div className="space-y-2">
-                <Label>Observações</Label>
-                <Textarea placeholder="Observações adicionais..." rows={3} value={formNotes} onChange={(e) => setFormNotes(e.target.value)} />
+                <Label>Observacoes</Label>
+                <Textarea
+                  rows={3}
+                  placeholder="Observacoes adicionais..."
+                  value={formNotes}
+                  onChange={(event) => setFormNotes(event.target.value)}
+                />
               </div>
               <Button className="w-full" disabled={isScheduling}>
                 {isScheduling ? (
@@ -372,30 +638,34 @@ const Scheduling = () => {
           </CardContent>
         </Card>
 
-        <Card className="shadow-card border-border xl:col-span-2 relative">
+        <Card className="relative border-border shadow-card xl:col-span-2">
           <CardHeader className="flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-base font-semibold">Calendário</CardTitle>
+            <CardTitle className="text-base font-semibold">Calendario</CardTitle>
             <div className="flex items-center gap-2">
-              <div className="flex items-center border border-border rounded-lg overflow-hidden">
+              <div className="flex items-center overflow-hidden rounded-lg border border-border">
                 <button
                   onClick={() => setView("week")}
-                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${view === "week" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                    view === "week" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                  }`}
                 >
                   Semana
                 </button>
                 <button
                   onClick={() => setView("month")}
-                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${view === "month" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                    view === "month" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                  }`}
                 >
-                  Mês
+                  Mes
                 </button>
               </div>
               <div className="flex items-center gap-1">
-                <button onClick={() => navigate(-1)} className="p-1.5 rounded-md hover:bg-muted transition-colors">
+                <button onClick={() => navigate(-1)} className="rounded-md p-1.5 transition-colors hover:bg-muted">
                   <ChevronLeft className="h-4 w-4 text-muted-foreground" />
                 </button>
-                <span className="text-sm font-medium px-2 min-w-[160px] text-center">{periodLabel}</span>
-                <button onClick={() => navigate(1)} className="p-1.5 rounded-md hover:bg-muted transition-colors">
+                <span className="min-w-[170px] px-2 text-center text-sm font-medium">{periodLabel}</span>
+                <button onClick={() => navigate(1)} className="rounded-md p-1.5 transition-colors hover:bg-muted">
                   <ChevronRight className="h-4 w-4 text-muted-foreground" />
                 </button>
               </div>
@@ -403,91 +673,81 @@ const Scheduling = () => {
           </CardHeader>
           <CardContent className="p-0">
             {isLoading ? (
-              <div className="p-6 space-y-3">
-                {Array.from({ length: 8 }).map((_, i) => (
-                  <div key={i} className="flex gap-3">
+              <div className="space-y-3 p-6">
+                {Array.from({ length: 8 }).map((_, row) => (
+                  <div key={row} className="flex gap-3">
                     <Skeleton className="h-5 w-14 shrink-0" />
-                    <div className="flex-1 grid grid-cols-5 gap-2">
-                      {Array.from({ length: 5 }).map((_, j) => (
-                        <Skeleton key={j} className="h-10" />
+                    <div className="grid flex-1 grid-cols-5 gap-2">
+                      {Array.from({ length: 5 }).map((__, col) => (
+                        <Skeleton key={col} className="h-10" />
                       ))}
                     </div>
                   </div>
                 ))}
               </div>
             ) : view === "week" ? (
-              renderWeekView()
+              <CalendarGrid
+                weekDays={weekDays}
+                appointmentsByDate={appointmentsByDate}
+                selectedAppointmentId={selectedAppointmentId}
+                onEventClick={openEditModal}
+                onEmptyCellClick={handleCreateFromEmptyCell}
+                onDropAppointment={(appointmentId, date, hour, minute) =>
+                  void handleDragDrop(appointmentId, date, hour, minute)
+                }
+                onHoverStart={handleHoverStart}
+                onHoverEnd={handleHoverEnd}
+                onStartResize={(appointment, clientY) => {
+                  const startDuration = durationById[appointment.id] || DEFAULT_DURATION_MINUTES;
+                  setResizeState({
+                    appointment,
+                    startY: clientY,
+                    startDurationMinutes: startDuration,
+                  });
+                }}
+              />
             ) : (
               renderMonthView()
             )}
           </CardContent>
-
-          {/* Appointment detail popup */}
-          {selectedAppt && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/60 backdrop-blur-sm rounded-lg">
-              <div className="bg-card border border-border rounded-xl shadow-lg p-5 w-80 space-y-3 animate-in fade-in zoom-in-95 duration-200">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-foreground">Detalhes do Agendamento</h3>
-                  <button onClick={() => setSelectedAppt(null)} className="p-1 rounded-md hover:bg-muted transition-colors">
-                    <X className="h-4 w-4 text-muted-foreground" />
-                  </button>
-                </div>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Paciente</span>
-                    <span className="font-medium text-foreground">{selectedAppt.patient}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Data</span>
-                    <span className="text-foreground">{new Date(selectedAppt.date + "T12:00:00").toLocaleDateString("pt-BR")}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Horário</span>
-                    <span className="text-foreground">{selectedAppt.time}</span>
-                  </div>
-                  {selectedAppt.professional && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Profissional</span>
-                      <span className="text-foreground">{selectedAppt.professional}</span>
-                    </div>
-                  )}
-                  {selectedAppt.reason && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Motivo</span>
-                      <span className="text-foreground">{selectedAppt.reason}</span>
-                    </div>
-                  )}
-                  {selectedAppt.notes && (
-                    <div>
-                      <span className="text-muted-foreground text-xs">Observações</span>
-                      <p className="text-foreground text-xs mt-0.5">{selectedAppt.notes}</p>
-                    </div>
-                  )}
-                </div>
-                <div className="flex gap-2 pt-1">
-                  <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={handleEditClick}>
-                    <Pencil className="h-3 w-3" /> Editar
-                  </Button>
-                  <Button variant="destructive" size="sm" className="flex-1 gap-1" onClick={() => handleDelete(selectedAppt.id)}>
-                    <Trash2 className="h-3 w-3" /> Excluir
-                  </Button>
-                </div>
-              </div>
-            </div>
-          )}
         </Card>
       </div>
 
-      <EditAppointmentModal
-        open={Boolean(editingAppt)}
-        appointment={editingAppt}
+      <EventModal
+        open={modalOpen}
+        mode={modalMode}
+        appointment={editingAppointment}
         patients={patients}
         professionals={PROFESSIONAL_OPTIONS}
-        onCancel={() => setEditingAppt(null)}
-        onSave={handleSaveEdit}
+        initialDate={modalSeed.date}
+        initialTime={modalSeed.time}
+        initialDurationMinutes={modalSeed.durationMinutes}
+        onCancel={() => {
+          setModalOpen(false);
+          setEditingAppointment(null);
+        }}
+        onSave={handleModalSave}
       />
+
+      {preview && (
+        <EventPreviewCard
+          appointment={preview.appointment}
+          position={preview.position}
+          durationMinutes={durationById[preview.appointment.id] || DEFAULT_DURATION_MINUTES}
+          onEdit={() => openEditModal(preview.appointment)}
+          onDelete={() => void handleDeleteAppointment(preview.appointment)}
+          onMouseEnter={() => {
+            if (previewCloseTimerRef.current) {
+              window.clearTimeout(previewCloseTimerRef.current);
+              previewCloseTimerRef.current = null;
+            }
+          }}
+          onMouseLeave={handleHoverEnd}
+        />
+      )}
     </div>
   );
 };
 
 export default Scheduling;
+

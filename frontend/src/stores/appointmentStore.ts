@@ -23,7 +23,7 @@ interface AppointmentStore {
   error: string;
   selectedDate: string | null;
   fetchAppointments: () => Promise<void>;
-  addAppointment: (appt: Omit<Appointment, "id" | "color">) => Promise<void>;
+  addAppointment: (appt: Omit<Appointment, "id" | "color">) => Promise<Appointment | null>;
   updateAppointment: (id: string, appt: UpdateAppointmentPayload) => Promise<ApiResponse<Appointment>>;
   removeAppointment: (id: string) => Promise<void>;
   setSelectedDate: (date: string | null) => void;
@@ -57,10 +57,13 @@ export const useAppointmentStore = create<AppointmentStore>((set, get) => ({
     const res = await createAppointmentApi(appt);
     if (res.success) {
       const color = COLORS[get().appointments.length % COLORS.length];
+      const nextAppointment = { ...res.data, color: res.data.color || color };
       set((s) => ({
-        appointments: [...s.appointments, { ...res.data, color: res.data.color || color }],
+        appointments: [...s.appointments, nextAppointment],
       }));
+      return nextAppointment;
     }
+    return null;
   },
 
   updateAppointment: async (id, appt) => {

@@ -8,6 +8,7 @@ export interface Appointment {
   professional: string;
   reason: string;
   notes: string;
+  duration?: number;
   color?: string;
 }
 
@@ -18,6 +19,7 @@ export interface CreateAppointmentPayload {
   professional: string;
   reason: string;
   notes: string;
+  duration?: number;
 }
 
 export interface UpdateAppointmentPayload {
@@ -29,6 +31,7 @@ export interface UpdateAppointmentPayload {
   professional_id?: string;
   reason?: string;
   notes?: string;
+  duration?: number;
   status?: string;
 }
 

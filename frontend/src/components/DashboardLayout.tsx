@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 import UserProfileDropdown from "@/components/UserProfileDropdown";
 import NotificationsPanel from "@/components/NotificationsPanel";
 import GlobalSearch from "@/components/GlobalSearch";
+import { useEffect, useState } from "react";
 
 const pageTitles: Record<string, string> = {
   "/": "Painel",
@@ -18,9 +19,29 @@ const pageTitles: Record<string, string> = {
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const title = pageTitles[location.pathname] || "Painel";
+  const [isTablet, setIsTablet] = useState(false);
+  const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
+
+  useEffect(() => {
+    const tabletMediaQuery = window.matchMedia("(min-width: 768px) and (max-width: 1024px)");
+    const handleTabletChange = () => {
+      setIsTablet(tabletMediaQuery.matches);
+    };
+
+    handleTabletChange();
+    tabletMediaQuery.addEventListener("change", handleTabletChange);
+
+    return () => {
+      tabletMediaQuery.removeEventListener("change", handleTabletChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    setDesktopSidebarOpen(!isTablet);
+  }, [isTablet]);
 
   return (
-    <SidebarProvider>
+    <SidebarProvider open={desktopSidebarOpen} onOpenChange={setDesktopSidebarOpen}>
       <div className="min-h-screen flex w-full">
         <AppSidebar />
         <div className="flex-1 flex flex-col min-w-0">

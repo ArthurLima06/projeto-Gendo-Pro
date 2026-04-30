@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS agenda (
   paciente_id TEXT NOT NULL,
   data TEXT NOT NULL,
   horario TEXT NOT NULL,
+  duracao INTEGER NOT NULL DEFAULT 60,
   status TEXT NOT NULL DEFAULT 'agendado',
   motivo TEXT,
   profissional TEXT,

@@ -148,6 +148,25 @@ def create_app():
         except (TypeError, ValueError):
             abort(400, description=f"{field_name} precisa ser numÃ©rico.")
 
+    def clamp_duration_minutes(value):
+        return max(15, min(1440, value))
+
+    def coerce_duration_minutes(value):
+        try:
+            minutes = int(value)
+        except (TypeError, ValueError):
+            return 60
+        return clamp_duration_minutes(minutes)
+
+    def parse_duration_minutes(value):
+        if value is None or value == "":
+            return 60
+        try:
+            minutes = int(value)
+        except (TypeError, ValueError):
+            abort(400, description="duration precisa ser numérico.")
+        return clamp_duration_minutes(minutes)
+
     def ensure_patient_exists(db, paciente_id):
         row = db.execute("SELECT 1 FROM pacientes WHERE id = ?", (paciente_id,)).fetchone()
         if row is None:
@@ -187,6 +206,8 @@ def create_app():
     def appointment_row_to_payload(row):
         if row is None:
             return None
+        columns = set(row.keys())
+        duration_minutes = coerce_duration_minutes(row["duracao"]) if "duracao" in columns else 60
         return {
             "id": row["id"],
             "patient": row["nome"],
@@ -196,6 +217,7 @@ def create_app():
             "reason": row["motivo"],
             "notes": row["observacoes"],
             "status": row["status"],
+            "duration": duration_minutes,
         }
 
     def medical_record_row_to_payload(row):
@@ -587,19 +609,21 @@ def create_app():
         patient = find_patient_by_name(db, data.get("patient"))
         if patient is None:
             abort(400, description="Paciente nÃ£o encontrado.")
+        duration_minutes = parse_duration_minutes(data.get("duration"))
 
         new_id = str(uuid.uuid4())
         db.execute(
             """
             INSERT INTO agenda
-            (id, paciente_id, data, horario, status, motivo, profissional, observacoes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, paciente_id, data, horario, duracao, status, motivo, profissional, observacoes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
                 patient["id"],
                 data.get("date"),
                 data.get("time"),
+                duration_minutes,
                 data.get("status", "agendado"),
                 data.get("reason"),
                 data.get("professional"),
@@ -634,7 +658,7 @@ def create_app():
 
         existing = db.execute(
             """
-            SELECT id, paciente_id, data, horario, profissional
+            SELECT id, paciente_id, data, horario, profissional, duracao
             FROM agenda
             WHERE id = ?
             """,
@@ -699,6 +723,10 @@ def create_app():
             if field in data:
                 updates.append(f"{column} = ?")
                 params.append(data.get(field))
+
+        if "duration" in data:
+            updates.append("duracao = ?")
+            params.append(parse_duration_minutes(data.get("duration")))
 
         if not updates:
             abort(400, description="Nenhum campo válido para atualização.")
@@ -1738,12 +1766,12 @@ def create_app():
 
         stats = [
             {"label": "Pacientes ativos", "value": str(total_patients), "icon": "Users", "change": "Atualizado hoje"},
-            {"label": "Agendamentos", "value": str(total_appointments), "icon": "CalendarDays", "change": "Ãšltimos 7 dias"},
-            {"label": "Faturamento", "value": f"R$ {total_payments:,.2f}", "icon": "DollarSign", "change": "Este mÃªs"},
-            {"label": "RelatÃ³rios", "value": "DisponÃ­vel", "icon": "FileText", "change": "Pronto para exportar"},
+            {"label": "Agendamentos", "value": str(total_appointments), "icon": "CalendarDays", "change": "Últimos 7 dias"},
+            {"label": "Faturamento", "value": f"R$ {total_payments:,.2f}", "icon": "DollarSign", "change": "Este mês"},
+            {"label": "Relatórios", "value": "Disponível", "icon": "FileText", "change": "Pronto para exportar"},
         ]
 
-        summary = f"{total_patients} pacientes cadastrados Â· {total_appointments} consultas agendadas"
+        summary = f"{total_patients} pacientes cadastrados · {total_appointments} consultas agendadas"
         return jsonify(
             {
                 "success": True,

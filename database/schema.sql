@@ -10,6 +10,11 @@ CREATE TABLE IF NOT EXISTS pacientes (
   responsavel TEXT,
   telefone TEXT,
   email TEXT,
+  cep TEXT,
+  endereco TEXT,
+  numero TEXT,
+  bairro TEXT,
+  cidade TEXT,
   observacoes TEXT,
   created_at TEXT NOT NULL
 );

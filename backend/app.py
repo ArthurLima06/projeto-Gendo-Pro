@@ -53,6 +53,7 @@ def create_app():
     VALID_ROLES = {"admin", "common"}
     SESSION_TTL_DAYS = 30
     PASSWORD_MIN_LENGTH = 8
+    PATIENT_COMMON_FIELDS = {"id", "name", "phone", "email", "createdAt", "updatedAt"}
 
     def row_to_dict(row):
         return dict(row) if row else None
@@ -194,6 +195,14 @@ def create_app():
         if len(password) < PASSWORD_MIN_LENGTH:
             abort(400, description=f"senha deve ter no minimo {PASSWORD_MIN_LENGTH} caracteres.")
         return password
+
+    def normalize_cep(value):
+        if is_blank(value):
+            return None
+        cep_digits = re.sub(r"\D", "", str(value))
+        if len(cep_digits) != 8:
+            abort(400, description="cep invalido. Use 8 digitos.")
+        return cep_digits
 
     def token_hash(token):
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -398,6 +407,9 @@ def create_app():
             return auth_error("FORBIDDEN", "Acesso permitido apenas para administradores.", 403)
         return user
 
+    def is_admin_user(user):
+        return isinstance(user, dict) and user.get("role") == "admin"
+
     def ensure_patient_exists(db, paciente_id):
         row = db.execute("SELECT 1 FROM pacientes WHERE id = ?", (paciente_id,)).fetchone()
         if row is None:
@@ -407,13 +419,13 @@ def create_app():
         row = db.execute("SELECT nome FROM pacientes WHERE id = ?", (paciente_id,)).fetchone()
         return row["nome"] if row else None
 
-    def patient_row_to_payload(row):
+    def patient_row_to_payload(row, user_role="admin"):
         if row is None:
             return None
         columns = set(row.keys())
         age_value = row["idade"]
         updated_at = row["updated_at"] if "updated_at" in columns and row["updated_at"] else row["created_at"]
-        return {
+        payload = {
             "id": row["id"],
             "name": row["nome"],
             "age": str(age_value) if age_value is not None else None,
@@ -421,10 +433,47 @@ def create_app():
             "responsible": row["responsavel"],
             "phone": row["telefone"],
             "email": row["email"],
+            "cep": row["cep"] if "cep" in columns else None,
+            "address": row["endereco"] if "endereco" in columns else None,
+            "number": row["numero"] if "numero" in columns else None,
+            "district": row["bairro"] if "bairro" in columns else None,
+            "city": row["cidade"] if "cidade" in columns else None,
             "notes": row["observacoes"],
             "createdAt": row["created_at"],
             "updatedAt": updated_at,
         }
+        if user_role != "admin":
+            payload = {key: value for key, value in payload.items() if key in PATIENT_COMMON_FIELDS}
+        return payload
+
+    def patient_row_to_legacy_payload(row, user_role="admin"):
+        payload = patient_row_to_payload(row, user_role)
+        if payload is None:
+            return None
+
+        legacy = {
+            "id": payload.get("id"),
+            "nome": payload.get("name"),
+            "telefone": payload.get("phone"),
+            "email": payload.get("email"),
+            "created_at": payload.get("createdAt"),
+            "updated_at": payload.get("updatedAt"),
+        }
+        if user_role == "admin":
+            legacy.update(
+                {
+                    "idade": payload.get("age"),
+                    "escola": payload.get("school"),
+                    "responsavel": payload.get("responsible"),
+                    "cep": payload.get("cep"),
+                    "endereco": payload.get("address"),
+                    "numero": payload.get("number"),
+                    "bairro": payload.get("district"),
+                    "cidade": payload.get("city"),
+                    "observacoes": payload.get("notes"),
+                }
+            )
+        return legacy
 
     def find_patient_by_name(db, name):
         if not name:
@@ -477,6 +526,8 @@ def create_app():
             "date": row["data"],
             "amount": f"{amount:.2f}",
             "status": row["status"],
+            "method": row["metodo_pagamento"] if "metodo_pagamento" in set(row.keys()) else None,
+            "notes": row["observacoes"] if "observacoes" in set(row.keys()) else None,
             "registeredAt": row["created_at"],
         }
 
@@ -803,27 +854,57 @@ def create_app():
         updated = find_professional_by_id(db, professional_id)
         return jsonify({"success": True, "data": professional_row_to_payload(updated)})
 
+    @app.route("/api/professionals/<professional_id>", methods=["DELETE"])
+    def delete_professional(professional_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
+
+        if user["id"] == professional_id:
+            abort(400, description="Nao e permitido excluir o proprio usuario logado.")
+
+        db = get_db()
+        existing = find_professional_by_id(db, professional_id)
+        if existing is None:
+            abort(404, description="Profissional nao encontrado.")
+
+        if existing["role"] == "admin":
+            admin_count = db.execute(
+                "SELECT COUNT(*) AS total FROM professionals WHERE role = 'admin'"
+            ).fetchone()
+            if admin_count and admin_count["total"] <= 1:
+                abort(400, description="Nao e permitido excluir o ultimo administrador do sistema.")
+
+        db.execute("DELETE FROM auth_sessions WHERE professional_id = ?", (professional_id,))
+        cursor = db.execute("DELETE FROM professionals WHERE id = ?", (professional_id,))
+        if cursor.rowcount == 0:
+            abort(404, description="Profissional nao encontrado.")
+        db.commit()
+        return jsonify({"success": True, "data": {"id": professional_id, "deleted": True}})
+
     # ----------------------
     # PACIENTES
     # ----------------------
 
     @app.route("/api/pacientes", methods=["GET"])
     def list_pacientes():
-
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
         db = get_db()
-
-        rows = db.execute(
-            "SELECT * FROM pacientes ORDER BY nome"
-        ).fetchall()
-
-        return jsonify([row_to_dict(r) for r in rows])
+        rows = db.execute("SELECT * FROM pacientes ORDER BY nome").fetchall()
+        payload = [patient_row_to_legacy_payload(row, user["role"]) for row in rows]
+        return jsonify(payload)
 
     @app.route("/api/pacientes", methods=["POST"])
     def create_paciente():
-
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
         data = json_payload()
 
         require_fields(data, ["nome"])
+        cep_value = normalize_cep(data.get("cep"))
 
         new_id = str(uuid.uuid4())
 
@@ -832,8 +913,8 @@ def create_app():
         db.execute(
             """
             INSERT INTO pacientes
-            (id, nome, idade, escola, responsavel, telefone, email, observacoes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, nome, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, observacoes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
@@ -843,6 +924,11 @@ def create_app():
                 data.get("responsavel"),
                 data.get("telefone"),
                 data.get("email"),
+                cep_value,
+                data.get("endereco"),
+                data.get("numero"),
+                data.get("bairro"),
+                data.get("cidade"),
                 data.get("observacoes"),
                 datetime.utcnow().isoformat(),
             ),
@@ -850,20 +936,27 @@ def create_app():
 
         db.commit()
 
-        return jsonify({"id": new_id})
+        created = db.execute("SELECT * FROM pacientes WHERE id = ?", (new_id,)).fetchone()
+        return jsonify({"id": new_id, "paciente": patient_row_to_legacy_payload(created, user["role"])})
 
     @app.route("/api/pacientes/<paciente_id>", methods=["GET"])
     def get_paciente(paciente_id):
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
         db = get_db()
         row = db.execute(
             "SELECT * FROM pacientes WHERE id = ?", (paciente_id,)
         ).fetchone()
         if row is None:
             abort(404, description="Paciente nÃ£o encontrado.")
-        return jsonify(row_to_dict(row))
+        return jsonify(patient_row_to_legacy_payload(row, user["role"]))
 
     @app.route("/api/pacientes/<paciente_id>", methods=["PATCH"])
     def update_paciente(paciente_id):
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
         data = json_payload()
 
         allowed_columns = [
@@ -873,12 +966,19 @@ def create_app():
             "responsavel",
             "telefone",
             "email",
+            "cep",
+            "endereco",
+            "numero",
+            "bairro",
+            "cidade",
             "observacoes",
         ]
 
         updates = {col: data[col] for col in allowed_columns if col in data}
         if not updates:
             abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
+        if "cep" in updates:
+            updates["cep"] = normalize_cep(updates.get("cep"))
 
         set_clause = ", ".join(f"{col} = ?" for col in updates)
         params = list(updates.values()) + [paciente_id]
@@ -891,11 +991,14 @@ def create_app():
         if cursor.rowcount == 0:
             abort(404, description="Paciente nÃ£o encontrado.")
         db.commit()
-
-        return jsonify({"id": paciente_id})
+        updated = db.execute("SELECT * FROM pacientes WHERE id = ?", (paciente_id,)).fetchone()
+        return jsonify({"id": paciente_id, "paciente": patient_row_to_legacy_payload(updated, user["role"])})
 
     @app.route("/api/pacientes/<paciente_id>", methods=["DELETE"])
     def delete_paciente(paciente_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
         db = get_db()
         cursor = db.execute("DELETE FROM pacientes WHERE id = ?", (paciente_id,))
         if cursor.rowcount == 0:
@@ -905,13 +1008,19 @@ def create_app():
 
     @app.route("/api/patients", methods=["GET"])
     def get_patients():
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
         db = get_db()
         rows = db.execute("SELECT * FROM pacientes ORDER BY nome").fetchall()
-        payload = [patient_row_to_payload(row) for row in rows]
+        payload = [patient_row_to_payload(row, user["role"]) for row in rows]
         return jsonify({"success": True, "data": payload})
 
     @app.route("/api/patients", methods=["POST"])
     def create_patient_v2():
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
         data = json_payload()
         require_fields(data, ["name", "phone", "email"])
         age_value = data.get("age")
@@ -922,14 +1031,15 @@ def create_app():
                 abort(400, description="Idade precisa ser numÃ©rica.")
         else:
             age_value = None
+        cep_value = normalize_cep(data.get("cep"))
 
         new_id = str(uuid.uuid4())
         db = get_db()
         db.execute(
             """
             INSERT INTO pacientes
-            (id, nome, idade, escola, responsavel, telefone, email, observacoes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, nome, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, observacoes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
@@ -939,16 +1049,24 @@ def create_app():
                 data.get("responsible"),
                 data.get("phone"),
                 data.get("email"),
+                cep_value,
+                data.get("address"),
+                data.get("number"),
+                data.get("district"),
+                data.get("city"),
                 data.get("notes"),
                 datetime.utcnow().isoformat(),
             ),
         )
         db.commit()
         patient = db.execute("SELECT * FROM pacientes WHERE id = ?", (new_id,)).fetchone()
-        return jsonify({"success": True, "data": patient_row_to_payload(patient)})
+        return jsonify({"success": True, "data": patient_row_to_payload(patient, user["role"])})
 
     @app.route("/api/patients/<patient_id>", methods=["PUT"])
     def update_patient_v2(patient_id):
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
         data = json_payload()
         mapping = {
             "name": "nome",
@@ -957,6 +1075,11 @@ def create_app():
             "responsible": "responsavel",
             "phone": "telefone",
             "email": "email",
+            "cep": "cep",
+            "address": "endereco",
+            "number": "numero",
+            "district": "bairro",
+            "city": "cidade",
             "notes": "observacoes",
         }
         updates = []
@@ -972,6 +1095,8 @@ def create_app():
                             abort(400, description="Idade precisa ser numÃ©rica.")
                     else:
                         value = None
+                if field == "cep":
+                    value = normalize_cep(value)
                 updates.append(f"{column} = ?")
                 params.append(value)
         if not updates:
@@ -988,16 +1113,19 @@ def create_app():
         db.commit()
 
         patient = db.execute("SELECT * FROM pacientes WHERE id = ?", (patient_id,)).fetchone()
-        return jsonify({"success": True, "data": patient_row_to_payload(patient)})
+        return jsonify({"success": True, "data": patient_row_to_payload(patient, user["role"])})
 
     @app.route("/api/patients/<patient_id>", methods=["DELETE"])
     def delete_patient_v2(patient_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
         db = get_db()
         cursor = db.execute("DELETE FROM pacientes WHERE id = ?", (patient_id,))
         if cursor.rowcount == 0:
             abort(404, description="Paciente nÃ£o encontrado.")
         db.commit()
-        return jsonify({"success": True, "data": {"id": patient_id}})
+        return jsonify({"success": True, "data": {"id": patient_id, "deleted": True}})
 
     # ----------------------
     # AGENDA
@@ -1542,6 +1670,9 @@ def create_app():
 
     @app.route("/api/financeiro/<lancamento_id>", methods=["PATCH"])
     def update_financeiro(lancamento_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
         data = json_payload()
         allowed = ["paciente_id", "data", "valor", "status", "metodo_pagamento", "observacoes"]
         updates = {key: data[key] for key in allowed if key in data}
@@ -1570,6 +1701,9 @@ def create_app():
 
     @app.route("/api/financeiro/<lancamento_id>", methods=["DELETE"])
     def delete_financeiro(lancamento_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
         db = get_db()
         cursor = db.execute("DELETE FROM financeiro WHERE id = ?", (lancamento_id,))
         if cursor.rowcount == 0:
@@ -1579,6 +1713,9 @@ def create_app():
 
     @app.route("/api/financial", methods=["GET"])
     def get_financial():
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
         db = get_db()
         rows = db.execute(
             """
@@ -1593,6 +1730,9 @@ def create_app():
 
     @app.route("/api/financial", methods=["POST"])
     def create_financial_record_v2():
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
         data = json_payload()
         require_fields(data, ["patient", "date", "amount", "status"])
         db = get_db()
@@ -1635,6 +1775,62 @@ def create_app():
             WHERE f.id = ?
             """,
             (new_id,),
+        ).fetchone()
+        return jsonify({"success": True, "data": financial_row_to_payload(row)})
+
+    @app.route("/api/financial/<financial_id>", methods=["PUT"])
+    def update_financial_record_v2(financial_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
+
+        data = json_payload()
+        mapping = {
+            "patient": "paciente_id",
+            "date": "data",
+            "amount": "valor",
+            "status": "status",
+            "method": "metodo_pagamento",
+            "notes": "observacoes",
+        }
+        updates = []
+        params = []
+        db = get_db()
+
+        for field, column in mapping.items():
+            if field not in data:
+                continue
+            value = data.get(field)
+            if field == "patient":
+                patient = find_patient_by_name(db, value)
+                if patient is None:
+                    abort(400, description="Paciente nÃ£o encontrado.")
+                value = patient["id"]
+            if field == "amount":
+                value = parse_float("amount", value)
+            updates.append(f"{column} = ?")
+            params.append(value)
+
+        if not updates:
+            abort(400, description="Nenhum campo valido para atualizacao.")
+
+        params.append(financial_id)
+        cursor = db.execute(
+            f"UPDATE financeiro SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        if cursor.rowcount == 0:
+            abort(404, description="LanÃ§amento nÃ£o encontrado.")
+        db.commit()
+
+        row = db.execute(
+            """
+            SELECT f.*, p.nome
+            FROM financeiro f
+            LEFT JOIN pacientes p ON f.paciente_id = p.id
+            WHERE f.id = ?
+            """,
+            (financial_id,),
         ).fetchone()
         return jsonify({"success": True, "data": financial_row_to_payload(row)})
 
@@ -2207,6 +2403,9 @@ def create_app():
 
     @app.route("/api/relatorio_pdf/<paciente_id>")
     def relatorio_pdf(paciente_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
         db = get_db()
         patient_row = db.execute("SELECT * FROM pacientes WHERE id = ?", (paciente_id,)).fetchone()
         if patient_row is None:
@@ -2238,15 +2437,36 @@ def create_app():
 
     @app.route("/api/exportar/pacientes")
     def exportar_pacientes():
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
         db = get_db()
         rows = db.execute(
             """
-            SELECT id, nome, idade, escola, responsavel, telefone, email, observacoes, created_at
+            SELECT id, nome, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, observacoes, created_at
             FROM pacientes
             ORDER BY nome
             """
         ).fetchall()
-        df = records_to_dataframe(rows, columns=["id", "nome", "idade", "escola", "responsavel", "telefone", "email", "observacoes", "created_at"])
+        df = records_to_dataframe(
+            rows,
+            columns=[
+                "id",
+                "nome",
+                "idade",
+                "escola",
+                "responsavel",
+                "telefone",
+                "email",
+                "cep",
+                "endereco",
+                "numero",
+                "bairro",
+                "cidade",
+                "observacoes",
+                "created_at",
+            ],
+        )
         return dataframe_to_excel_response(df, "Pacientes", "pacientes.xlsx")
 
     @app.route("/api/exportar/agenda")
@@ -2292,6 +2512,9 @@ def create_app():
 
     @app.route("/api/exportar/financeiro")
     def exportar_financeiro():
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
         db = get_db()
         rows = db.execute(
             """

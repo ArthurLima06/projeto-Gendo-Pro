@@ -8,6 +8,11 @@ export interface Patient {
   responsible?: string;
   phone: string;
   email: string;
+  cep?: string;
+  address?: string;
+  number?: string;
+  district?: string;
+  city?: string;
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -20,6 +25,11 @@ export interface CreatePatientPayload {
   responsible?: string;
   phone: string;
   email: string;
+  cep?: string;
+  address?: string;
+  number?: string;
+  district?: string;
+  city?: string;
   notes?: string;
 }
 

@@ -50,3 +50,9 @@ export async function updateProfessional(
 ): Promise<ApiResponse<Professional>> {
   return api.put<Professional>(`/professionals/${id}`, data);
 }
+
+export async function deleteProfessional(
+  id: string
+): Promise<ApiResponse<{ id: string; deleted: boolean }>> {
+  return api.delete<{ id: string; deleted: boolean }>(`/professionals/${id}`);
+}

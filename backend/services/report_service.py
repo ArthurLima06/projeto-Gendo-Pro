@@ -91,6 +91,21 @@ def _fetch_notes(patient_id: str, start_date: str, end_date: str) -> list[dict[s
     return [_row_to_dict(row) for row in rows]
 
 
+def _fetch_financial_entries(patient_id: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT id, data, valor, status, metodo_pagamento, observacoes
+        FROM financeiro
+        WHERE paciente_id = ?
+          AND date(data) BETWEEN date(?) AND date(?)
+        ORDER BY date(data) ASC, created_at ASC
+        """,
+        (patient_id, start_date, end_date),
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
 def _draw_wrapped_line(
     pdf: canvas.Canvas,
     text: str,
@@ -311,3 +326,97 @@ def generate_patient_excel(patient_id: str, start_date: str, end_date: str) -> t
     output.seek(0)
     filename = f"relatorio_paciente_{patient_id}_{start_date}_{end_date}.xlsx"
     return output, filename
+
+
+def generate_financial_pdf(patient_id: str, start_date: str, end_date: str) -> tuple[BytesIO, str]:
+    patient = _fetch_patient(patient_id)
+    entries = _fetch_financial_entries(patient_id, start_date, end_date)
+
+    logger.info(
+        "Generating financial PDF report for patient=%s period=%s..%s (entries=%s)",
+        patient_id,
+        start_date,
+        end_date,
+        len(entries),
+    )
+
+    total_amount = sum(float(entry.get("valor") or 0) for entry in entries)
+    paid_amount = sum(
+        float(entry.get("valor") or 0)
+        for entry in entries
+        if str(entry.get("status") or "").strip().lower() == "pago"
+    )
+    pending_amount = max(total_amount - paid_amount, 0)
+
+    status_totals: dict[str, int] = {}
+    for entry in entries:
+        status = _safe_value(entry.get("status"))
+        status_totals[status] = status_totals.get(status, 0) + 1
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    margin = 40
+    y = height - margin
+    max_width = width - (margin * 2)
+
+    def ensure_space(lines: int = 2) -> None:
+        nonlocal y
+        if y < margin + (lines * 14):
+            pdf.showPage()
+            y = height - margin
+            pdf.setFont("Helvetica", 10)
+
+    def section_title(title: str) -> None:
+        nonlocal y
+        ensure_space(3)
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.drawString(margin, y, title)
+        y -= 18
+        pdf.setFont("Helvetica", 10)
+
+    def line(text: str, indent: int = 0) -> None:
+        nonlocal y
+        ensure_space(2)
+        y = _draw_wrapped_line(pdf, text, margin + indent, y, max_width - indent)
+
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(margin, y, "Relatorio Financeiro")
+    y -= 24
+
+    section_title("Paciente e Periodo")
+    line(f"Paciente: {_safe_value(patient.get('nome'))}")
+    line(f"Periodo: {start_date} ate {end_date}")
+    y -= 6
+
+    section_title("Resumo Financeiro")
+    line(f"Total de lancamentos: {len(entries)}")
+    line(f"Valor total: R$ {total_amount:.2f}")
+    line(f"Valor pago: R$ {paid_amount:.2f}")
+    line(f"Pendencias: R$ {pending_amount:.2f}")
+    if status_totals:
+        line(
+            "Status: "
+            + " | ".join([f"{status}: {count}" for status, count in sorted(status_totals.items())])
+        )
+    y -= 6
+
+    section_title("Pagamentos no Periodo")
+    if not entries:
+        line("Nenhum pagamento encontrado no periodo selecionado.")
+    else:
+        for entry in entries:
+            line(
+                f"- {entry.get('data')} | {_safe_value(entry.get('status'))} | R$ {float(entry.get('valor') or 0):.2f}",
+                indent=10,
+            )
+            if entry.get("metodo_pagamento"):
+                line(f"  Metodo: {_safe_value(entry.get('metodo_pagamento'))}", indent=10)
+            if entry.get("observacoes"):
+                line(f"  Observacoes: {_safe_value(entry.get('observacoes'))}", indent=10)
+            y -= 4
+
+    pdf.save()
+    buffer.seek(0)
+    filename = f"relatorio_financeiro_{patient_id}_{start_date}_{end_date}.pdf"
+    return buffer, filename

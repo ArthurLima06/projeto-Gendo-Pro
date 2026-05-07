@@ -18,6 +18,7 @@ def get_db():
             check_same_thread=False,
         )
         g.db.row_factory = sqlite3.Row
+        g.db.execute("PRAGMA foreign_keys = ON")
     return g.db
 
 
@@ -82,6 +83,11 @@ def init_db():
     _ensure_column(db, "professionals", "future_plan", "future_plan TEXT")
     _ensure_column(db, "professionals", "future_status", "future_status TEXT NOT NULL DEFAULT 'active'")
     _ensure_column(db, "professionals", "future_company_id", "future_company_id TEXT")
+    _ensure_column(db, "pacientes", "cep", "cep TEXT")
+    _ensure_column(db, "pacientes", "endereco", "endereco TEXT")
+    _ensure_column(db, "pacientes", "numero", "numero TEXT")
+    _ensure_column(db, "pacientes", "bairro", "bairro TEXT")
+    _ensure_column(db, "pacientes", "cidade", "cidade TEXT")
 
     db.execute("CREATE INDEX IF NOT EXISTS idx_professionals_email ON professionals(email)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_agenda_professional_id ON agenda(professional_id)")

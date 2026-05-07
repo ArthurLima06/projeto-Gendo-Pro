@@ -1,9 +1,10 @@
 from datetime import datetime
 
-from flask import Blueprint, current_app, jsonify, request, send_file
+from flask import Blueprint, current_app, g, jsonify, request, send_file
 
 from backend.services.report_service import (
     PatientNotFoundError,
+    generate_financial_pdf,
     generate_patient_excel,
     generate_patient_pdf,
 )
@@ -45,6 +46,15 @@ def _parse_date_range() -> tuple[str, str]:
         raise ValueError("Data final não pode ser anterior à data inicial.")
 
     return start.isoformat(), end.isoformat()
+
+
+def _require_admin_user():
+    current_user = getattr(g, "current_user", None)
+    if not isinstance(current_user, dict):
+        return _error_response(401, "UNAUTHORIZED", "Sessao invalida ou expirada.")
+    if current_user.get("role") != "admin":
+        return _error_response(403, "FORBIDDEN", "Acesso permitido apenas para administradores.")
+    return None
 
 
 @reports_bp.get("/patient/<patient_id>/pdf")
@@ -90,4 +100,31 @@ def get_patient_excel_report(patient_id: str):
         as_attachment=True,
         download_name=filename,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@reports_bp.get("/financial/patient/<patient_id>/pdf")
+def get_financial_pdf_report(patient_id: str):
+    permission_error = _require_admin_user()
+    if permission_error is not None:
+        return permission_error
+
+    try:
+        start_date, end_date = _parse_date_range()
+        report_stream, filename = generate_financial_pdf(patient_id, start_date, end_date)
+    except ValueError as exc:
+        return _error_response(400, "INVALID_DATE_RANGE", str(exc))
+    except PatientNotFoundError as exc:
+        return _error_response(404, "PATIENT_NOT_FOUND", str(exc))
+    except Exception:
+        current_app.logger.exception(
+            "Failed to generate financial PDF report for patient=%s", patient_id
+        )
+        return _error_response(500, "REPORT_GENERATION_ERROR", "Erro ao gerar relatÃ³rio financeiro.")
+
+    return send_file(
+        report_stream,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/pdf",
     )

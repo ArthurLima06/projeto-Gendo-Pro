@@ -19,7 +19,18 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   createProfessional,
+  deleteProfessional,
   getProfessionals,
   updateProfessional,
   type Professional,
@@ -70,6 +81,8 @@ const Professionals = () => {
 
   const [editing, setEditing] = useState<Professional | null>(null);
   const [editForm, setEditForm] = useState<EditFormState>(defaultEditForm);
+  const [deleteTarget, setDeleteTarget] = useState<Professional | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const sortedProfessionals = useMemo(
     () => [...professionals].sort((a, b) => a.name.localeCompare(b.name, "pt-BR")),
@@ -185,6 +198,36 @@ const Professionals = () => {
     toast({
       title: "Profissional atualizado",
       description: "As informacoes foram salvas com sucesso.",
+    });
+  };
+
+  const handleDeleteProfessional = async () => {
+    if (!deleteTarget || !isAdmin) {
+      return;
+    }
+
+    setIsDeleting(true);
+    const response = await deleteProfessional(deleteTarget.id);
+    setIsDeleting(false);
+
+    if (!response.success) {
+      toast({
+        title: "Erro ao excluir profissional",
+        description: response.error.message,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setProfessionals((prev) => prev.filter((item) => item.id !== deleteTarget.id));
+    setDeleteTarget(null);
+    if (editing?.id === deleteTarget.id) {
+      setEditing(null);
+      setEditForm(defaultEditForm);
+    }
+    toast({
+      title: "Profissional excluido",
+      description: "O acesso do usuario foi removido com sucesso.",
     });
   };
 
@@ -399,6 +442,14 @@ const Professionals = () => {
             </div>
           </div>
           <DialogFooter>
+            <Button
+              variant="destructive"
+              onClick={() => editing && setDeleteTarget(editing)}
+              disabled={isSubmitting}
+              className="mr-auto"
+            >
+              Excluir Profissional
+            </Button>
             <Button variant="outline" onClick={() => setEditing(null)} disabled={isSubmitting}>
               Cancelar
             </Button>
@@ -415,6 +466,34 @@ const Professionals = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirmar exclusao</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tem certeza que deseja excluir este profissional?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteProfessional}
+              disabled={isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Excluindo...
+                </>
+              ) : (
+                "Excluir Profissional"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

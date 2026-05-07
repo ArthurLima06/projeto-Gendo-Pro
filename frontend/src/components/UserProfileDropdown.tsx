@@ -22,11 +22,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Settings, LogOut, Sun, Moon, Camera, Lock, User } from "lucide-react";
+import { Settings, LogOut, Sun, Moon, Camera, Lock, User, Users } from "lucide-react";
 
 const UserProfileDropdown = () => {
   const navigate = useNavigate();
-  const { logout, userEmail } = useAuth();
+  const { logout, userEmail, currentUser } = useAuth();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains("dark"));
   const [profileImage, setProfileImage] = useState<string | null>(null);
@@ -40,6 +40,7 @@ const UserProfileDropdown = () => {
   }, [userEmail]);
 
   const displayEmail = userEmail || "empresa@email.com";
+  const displayName = currentUser?.name || "Gendo Pro";
 
   const handleLogout = () => {
     logout();
@@ -100,7 +101,7 @@ const UserProfileDropdown = () => {
                 </button>
               </div>
               <div className="flex flex-col">
-                <p className="text-sm font-medium text-foreground">Gendo Pro</p>
+                <p className="text-sm font-medium text-foreground">{displayName}</p>
                 <p className="text-xs text-muted-foreground truncate max-w-[160px]">{displayEmail}</p>
               </div>
             </div>
@@ -111,6 +112,11 @@ const UserProfileDropdown = () => {
           <DropdownMenuItem onClick={() => setSettingsOpen(true)} className="cursor-pointer">
             <Settings className="mr-2 h-4 w-4" />
             Configurações
+          </DropdownMenuItem>
+
+          <DropdownMenuItem onClick={() => navigate("/professionals")} className="cursor-pointer">
+            <Users className="mr-2 h-4 w-4" />
+            Profissionais
           </DropdownMenuItem>
 
           <DropdownMenuItem onClick={toggleTheme} className="cursor-pointer">

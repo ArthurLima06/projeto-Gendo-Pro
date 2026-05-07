@@ -223,8 +223,8 @@ const CalendarGrid = ({
       onDragEnd={handleDragEnd}
       onDragCancel={() => setDraggingAppointment(null)}
     >
-      <div className="overflow-x-auto">
-        <div className="min-w-[740px]">
+      <div className="h-full overflow-x-auto">
+        <div className="min-w-[740px] h-full min-h-[620px] flex flex-col">
           <div
             className="grid grid-cols-[60px_repeat(7,1fr)] border-b border-border"
             style={{ paddingRight: `${scrollbarCompensation}px` }}
@@ -244,7 +244,7 @@ const CalendarGrid = ({
 
           <div
             ref={gridScrollRef}
-            className="max-h-[65vh] overflow-y-auto [scrollbar-gutter:stable]"
+            className="flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable]"
           >
             {HOURS.map((hour) => (
               <div key={hour} className="grid grid-cols-[60px_repeat(7,1fr)] border-b border-border last:border-0">

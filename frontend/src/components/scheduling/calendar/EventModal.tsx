@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
 import type { Patient } from "@/services/patientsService";
+import type { Professional } from "@/services/professionalsService";
 import type { Appointment } from "@/stores/appointmentStore";
 
 interface EventModalSubmitPayload {
@@ -40,7 +41,7 @@ interface EventModalProps {
   mode: "create" | "edit";
   appointment: Appointment | null;
   patients: Patient[];
-  professionals: string[];
+  professionals: Professional[];
   initialDate?: string;
   initialTime?: string;
   initialDurationMinutes?: number;
@@ -70,11 +71,26 @@ const EventModal = ({
   const [patient, setPatient] = useState("");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
-  const [professional, setProfessional] = useState("");
+  const [professionalId, setProfessionalId] = useState("");
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState("");
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [isSaving, setIsSaving] = useState(false);
+
+  const professionalOptions = useMemo(() => {
+    const map = new Map(professionals.map((item) => [item.id, item]));
+    if (appointment?.professional && appointment.professionalId) {
+      map.set(appointment.professionalId, {
+        id: appointment.professionalId,
+        name: appointment.professional,
+        email: "",
+        role: "common",
+        createdAt: "",
+        updatedAt: "",
+      });
+    }
+    return Array.from(map.values());
+  }, [professionals, appointment]);
 
   useEffect(() => {
     if (!open) {
@@ -85,7 +101,9 @@ const EventModal = ({
       setPatient(appointment.patient || "");
       setDate(appointment.date || "");
       setTime((appointment.time || "").slice(0, 5));
-      setProfessional(appointment.professional || "");
+      const byId = professionalOptions.find((item) => item.id === appointment.professionalId);
+      const byName = professionalOptions.find((item) => item.name === appointment.professional);
+      setProfessionalId(byId?.id || byName?.id || "");
       setReason(appointment.reason || "");
       setNotes(appointment.notes || "");
       setDurationMinutes(normalizeDuration(initialDurationMinutes));
@@ -95,11 +113,11 @@ const EventModal = ({
     setPatient("");
     setDate(initialDate || "");
     setTime((initialTime || "").slice(0, 5));
-    setProfessional("");
+    setProfessionalId("");
     setReason("");
     setNotes("");
     setDurationMinutes(normalizeDuration(initialDurationMinutes));
-  }, [open, mode, appointment, initialDate, initialTime, initialDurationMinutes]);
+  }, [open, mode, appointment, initialDate, initialTime, initialDurationMinutes, professionalOptions]);
 
   const patientOptions = useMemo(() => {
     const names = new Set(patients.map((item) => item.name));
@@ -108,14 +126,6 @@ const EventModal = ({
     }
     return Array.from(names).sort((a, b) => a.localeCompare(b, "pt-BR"));
   }, [patients, appointment]);
-
-  const professionalOptions = useMemo(() => {
-    const names = new Set(professionals);
-    if (appointment?.professional) {
-      names.add(appointment.professional);
-    }
-    return Array.from(names);
-  }, [professionals, appointment]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -130,6 +140,7 @@ const EventModal = ({
     }
 
     const selectedPatient = patients.find((item) => item.name === patient);
+    const selectedProfessional = professionalOptions.find((item) => item.id === professionalId);
 
     setIsSaving(true);
     try {
@@ -138,8 +149,8 @@ const EventModal = ({
         patient_id: selectedPatient?.id,
         date,
         time,
-        professional,
-        professional_id: professional || undefined,
+        professional: selectedProfessional?.name || "",
+        professional_id: selectedProfessional?.id,
         reason,
         notes,
         durationMinutes: normalizeDuration(durationMinutes),
@@ -202,14 +213,14 @@ const EventModal = ({
 
           <div className="space-y-2">
             <Label>Profissional</Label>
-            <Select value={professional} onValueChange={setProfessional}>
+            <Select value={professionalId} onValueChange={setProfessionalId}>
               <SelectTrigger>
                 <SelectValue placeholder="Selecionar profissional" />
               </SelectTrigger>
               <SelectContent>
-                {professionalOptions.map((name) => (
-                  <SelectItem key={name} value={name}>
-                    {name}
+                {professionalOptions.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {item.name}
                   </SelectItem>
                 ))}
               </SelectContent>

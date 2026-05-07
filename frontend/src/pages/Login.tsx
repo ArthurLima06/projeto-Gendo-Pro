@@ -53,7 +53,7 @@ const Login = () => {
       const response = await loginUser(data.email, data.password);
 
       if (response.success === true) {
-        login(data.email, response.token);
+        login(response.user, response.token);
         if (paymentStatus !== "active") {
           navigate("/payment-blocked");
         } else {
@@ -61,7 +61,7 @@ const Login = () => {
         }
       } else {
         const errorCode = response.error.code;
-        setLoginError(getAuthErrorMessage(errorCode));
+        setLoginError(response.error.message || getAuthErrorMessage(errorCode));
       }
     } catch {
       setLoginError(getAuthErrorMessage("NETWORK_ERROR"));

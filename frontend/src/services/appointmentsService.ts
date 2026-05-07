@@ -6,6 +6,7 @@ export interface Appointment {
   date: string;
   time: string;
   professional: string;
+  professionalId?: string | null;
   reason: string;
   notes: string;
   duration?: number;
@@ -17,6 +18,7 @@ export interface CreateAppointmentPayload {
   date: string;
   time: string;
   professional: string;
+  professional_id?: string;
   reason: string;
   notes: string;
   duration?: number;

@@ -4,14 +4,18 @@ import re
 import sqlite3
 import unicodedata
 import uuid
-from datetime import datetime
+import hashlib
+import secrets
+from datetime import datetime, timedelta
 from io import BytesIO
 from urllib.parse import quote
 
 import pandas as pd
-from flask import Flask, abort, jsonify, request, send_file, send_from_directory, url_for
+from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory, url_for
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from werkzeug.exceptions import HTTPException
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 from config.settings import DATABASE_DIR
@@ -46,6 +50,9 @@ def create_app():
         init_db()
 
     app.register_blueprint(reports_bp)
+    VALID_ROLES = {"admin", "common"}
+    SESSION_TTL_DAYS = 30
+    PASSWORD_MIN_LENGTH = 8
 
     def row_to_dict(row):
         return dict(row) if row else None
@@ -167,6 +174,230 @@ def create_app():
             abort(400, description="duration precisa ser numérico.")
         return clamp_duration_minutes(minutes)
 
+    def validate_email(email):
+        if is_blank(email):
+            abort(400, description="email e obrigatorio.")
+        normalized_email = str(email).strip().lower()
+        email_pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+        if not re.match(email_pattern, normalized_email):
+            abort(400, description="email invalido.")
+        return normalized_email
+
+    def validate_role(value):
+        role = (value or "").strip().lower()
+        if role not in VALID_ROLES:
+            abort(400, description="role invalida. Use admin ou common.")
+        return role
+
+    def validate_password(value):
+        password = str(value or "")
+        if len(password) < PASSWORD_MIN_LENGTH:
+            abort(400, description=f"senha deve ter no minimo {PASSWORD_MIN_LENGTH} caracteres.")
+        return password
+
+    def token_hash(token):
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def parse_bearer_token():
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return None
+        token = auth_header[7:].strip()
+        return token or None
+
+    def auth_error(code, message, status_code):
+        return (
+            jsonify(
+                {
+                    "success": False,
+                    "error": {"code": code, "message": message},
+                }
+            ),
+            status_code,
+        )
+
+    def now_utc_iso():
+        return datetime.utcnow().isoformat()
+
+    def professional_row_to_payload(row):
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "email": row["email"],
+            "phone": row["phone"],
+            "role": row["role"],
+            "futurePlan": row["future_plan"],
+            "futureStatus": row["future_status"],
+            "futureCompanyId": row["future_company_id"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    def user_from_professional_row(row):
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "email": row["email"],
+            "role": row["role"],
+        }
+
+    def find_professional_by_id(db, professional_id):
+        return db.execute(
+            "SELECT * FROM professionals WHERE id = ? LIMIT 1",
+            (professional_id,),
+        ).fetchone()
+
+    def find_professional_by_email(db, email):
+        return db.execute(
+            "SELECT * FROM professionals WHERE email = ? COLLATE NOCASE LIMIT 1",
+            (email,),
+        ).fetchone()
+
+    def find_professional_by_name(db, name):
+        if is_blank(name):
+            return None
+        return db.execute(
+            "SELECT * FROM professionals WHERE name = ? COLLATE NOCASE LIMIT 1",
+            (str(name).strip(),),
+        ).fetchone()
+
+    def resolve_professional_for_appointment(db, data):
+        professional_id = data.get("professional_id")
+        professional_text = data.get("professional")
+
+        if not is_blank(professional_id):
+            professional = find_professional_by_id(db, professional_id)
+            if professional is None:
+                abort(400, description="Profissional nao encontrado.")
+            return professional["id"], professional["name"]
+
+        if is_blank(professional_text):
+            return None, None
+
+        typed_value = str(professional_text).strip()
+        professional = (
+            find_professional_by_id(db, typed_value)
+            or find_professional_by_email(db, typed_value.lower())
+            or find_professional_by_name(db, typed_value)
+        )
+        if professional:
+            return professional["id"], professional["name"]
+        return None, typed_value
+
+    def create_auth_session(db, professional_id):
+        raw_token = secrets.token_urlsafe(48)
+        now = datetime.utcnow()
+        db.execute(
+            """
+            INSERT INTO auth_sessions
+            (id, professional_id, token_hash, created_at, expires_at, last_seen_at, revoked_at)
+            VALUES (?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                str(uuid.uuid4()),
+                professional_id,
+                token_hash(raw_token),
+                now.isoformat(),
+                (now + timedelta(days=SESSION_TTL_DAYS)).isoformat(),
+                now.isoformat(),
+            ),
+        )
+        return raw_token
+
+    def revoke_auth_session(db, raw_token):
+        cursor = db.execute(
+            """
+            UPDATE auth_sessions
+            SET revoked_at = ?, last_seen_at = ?
+            WHERE token_hash = ? AND revoked_at IS NULL
+            """,
+            (now_utc_iso(), now_utc_iso(), token_hash(raw_token)),
+        )
+        return cursor.rowcount > 0
+
+    def get_current_user():
+        if hasattr(g, "current_user"):
+            return g.current_user
+
+        raw_token = parse_bearer_token()
+        if not raw_token:
+            g.current_user = None
+            g.current_session_token = None
+            return None
+
+        db = get_db()
+        row = db.execute(
+            """
+            SELECT
+                p.id,
+                p.name,
+                p.email,
+                p.role,
+                p.future_status,
+                s.id AS session_id,
+                s.expires_at
+            FROM auth_sessions s
+            INNER JOIN professionals p ON p.id = s.professional_id
+            WHERE s.token_hash = ? AND s.revoked_at IS NULL
+            LIMIT 1
+            """,
+            (token_hash(raw_token),),
+        ).fetchone()
+
+        if row is None:
+            g.current_user = None
+            g.current_session_token = None
+            return None
+
+        expires_at = row["expires_at"]
+        if expires_at and expires_at <= now_utc_iso():
+            db.execute(
+                "UPDATE auth_sessions SET revoked_at = ?, last_seen_at = ? WHERE id = ?",
+                (now_utc_iso(), now_utc_iso(), row["session_id"]),
+            )
+            db.commit()
+            g.current_user = None
+            g.current_session_token = None
+            return None
+
+        if (row["future_status"] or "active").lower() not in {"active", "trial"}:
+            g.current_user = None
+            g.current_session_token = None
+            return None
+
+        db.execute(
+            "UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?",
+            (now_utc_iso(), row["session_id"]),
+        )
+        db.commit()
+
+        g.current_user = {
+            "id": row["id"],
+            "name": row["name"],
+            "email": row["email"],
+            "role": row["role"],
+        }
+        g.current_session_token = raw_token
+        return g.current_user
+
+    def require_auth():
+        user = get_current_user()
+        if user is None:
+            return auth_error("UNAUTHORIZED", "Sessao invalida ou expirada.", 401)
+        return user
+
+    def require_admin():
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
+        if user["role"] != "admin":
+            return auth_error("FORBIDDEN", "Acesso permitido apenas para administradores.", 403)
+        return user
+
     def ensure_patient_exists(db, paciente_id):
         row = db.execute("SELECT 1 FROM pacientes WHERE id = ?", (paciente_id,)).fetchone()
         if row is None:
@@ -208,12 +439,14 @@ def create_app():
             return None
         columns = set(row.keys())
         duration_minutes = coerce_duration_minutes(row["duracao"]) if "duracao" in columns else 60
+        professional_name = row["professional_name"] if "professional_name" in columns and row["professional_name"] else row["profissional"]
         return {
             "id": row["id"],
             "patient": row["nome"],
             "date": row["data"],
             "time": row["horario"],
-            "professional": row["profissional"],
+            "professional": professional_name,
+            "professionalId": row["professional_id"] if "professional_id" in columns else None,
             "reason": row["motivo"],
             "notes": row["observacoes"],
             "status": row["status"],
@@ -279,6 +512,56 @@ def create_app():
         )
         return notification_id
 
+    @app.errorhandler(HTTPException)
+    def handle_http_exception(exc):
+        if request.path.startswith("/api"):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": {
+                            "code": exc.name.upper().replace(" ", "_"),
+                            "message": exc.description or "Erro na requisicao.",
+                        },
+                    }
+                ),
+                exc.code,
+            )
+        return exc
+
+    @app.errorhandler(Exception)
+    def handle_unexpected_exception(exc):
+        app.logger.exception("Unhandled server error")
+        if request.path.startswith("/api"):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "error": {
+                            "code": "SERVER_ERROR",
+                            "message": "Erro interno do servidor.",
+                        },
+                    }
+                ),
+                500,
+            )
+        raise exc
+
+    @app.before_request
+    def enforce_api_auth():
+        if not request.path.startswith("/api"):
+            return None
+        public_paths = {
+            "/api/auth/login",
+            "/api/auth/reset-password",
+            "/api/health",
+        }
+        if request.path in public_paths:
+            return None
+        return None if get_current_user() is not None else auth_error(
+            "UNAUTHORIZED", "Sessao invalida ou expirada.", 401
+        )
+
     # ----------------------
     # PÃGINAS HTML
     # ----------------------
@@ -295,6 +578,230 @@ def create_app():
     def assets(filename):
         assets_dir = os.path.join(app.static_folder, "assets")
         return send_from_directory(assets_dir, filename)
+
+    # ----------------------
+    # AUTH / PROFESSIONALS
+    # ----------------------
+
+    @app.route("/api/auth/login", methods=["POST"])
+    def auth_login():
+        data = json_payload()
+        email = validate_email(data.get("email"))
+        password = str(data.get("password") or "")
+        if is_blank(password):
+            abort(400, description="senha e obrigatoria.")
+
+        db = get_db()
+        professional = find_professional_by_email(db, email)
+        if professional is None:
+            return auth_error("INVALID_CREDENTIALS", "Email ou senha invalidos.", 401)
+
+        if not check_password_hash(professional["password_hash"], password):
+            return auth_error("INVALID_CREDENTIALS", "Email ou senha invalidos.", 401)
+
+        if (professional["future_status"] or "active").lower() not in {"active", "trial"}:
+            return auth_error(
+                "ACCOUNT_BLOCKED",
+                "Conta bloqueada temporariamente. Contate o administrador.",
+                403,
+            )
+
+        token = create_auth_session(db, professional["id"])
+        db.commit()
+        return jsonify(
+            {
+                "success": True,
+                "data": {
+                    "token": token,
+                    "user": user_from_professional_row(professional),
+                },
+            }
+        )
+
+    @app.route("/api/auth/me", methods=["GET"])
+    def auth_me():
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
+        return jsonify({"success": True, "data": {"user": user}})
+
+    @app.route("/api/auth/logout", methods=["POST"])
+    def auth_logout():
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
+        db = get_db()
+        raw_token = getattr(g, "current_session_token", None)
+        if raw_token:
+            revoke_auth_session(db, raw_token)
+            db.commit()
+        return jsonify({"success": True, "data": {"success": True}})
+
+    @app.route("/api/auth/reset-password", methods=["POST"])
+    def auth_reset_password():
+        data = json_payload()
+        password = validate_password(data.get("newPassword"))
+        current_user = get_current_user()
+
+        db = get_db()
+        target_professional_id = None
+        if isinstance(current_user, dict):
+            target_professional_id = current_user["id"]
+        else:
+            email = validate_email(data.get("email"))
+            professional = find_professional_by_email(db, email)
+            if professional is None:
+                return auth_error("USER_NOT_FOUND", "Usuario nao encontrado.", 404)
+            target_professional_id = professional["id"]
+
+        db.execute(
+            "UPDATE professionals SET password_hash = ?, updated_at = ? WHERE id = ?",
+            (generate_password_hash(password), now_utc_iso(), target_professional_id),
+        )
+        db.commit()
+        return jsonify({"success": True, "data": {"success": True}})
+
+    @app.route("/api/professionals", methods=["GET"])
+    def list_professionals():
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
+
+        db = get_db()
+        rows = db.execute(
+            """
+            SELECT id, name, email, phone, role, future_plan, future_status, future_company_id, created_at, updated_at
+            FROM professionals
+            ORDER BY name
+            """
+        ).fetchall()
+        return jsonify({"success": True, "data": [professional_row_to_payload(row) for row in rows]})
+
+    @app.route("/api/professionals", methods=["POST"])
+    def create_professional():
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
+
+        data = json_payload()
+        name = (data.get("name") or "").strip()
+        if not name:
+            abort(400, description="name e obrigatorio.")
+        email = validate_email(data.get("email"))
+        password = validate_password(data.get("password"))
+        role = validate_role(data.get("role"))
+        phone = (data.get("phone") or "").strip() or None
+
+        db = get_db()
+        existing = find_professional_by_email(db, email)
+        if existing is not None:
+            return auth_error("EMAIL_ALREADY_EXISTS", "Ja existe profissional com este email.", 409)
+
+        now = now_utc_iso()
+        professional_id = str(uuid.uuid4())
+        db.execute(
+            """
+            INSERT INTO professionals
+            (id, name, email, password_hash, phone, role, future_plan, future_status, future_company_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                professional_id,
+                name,
+                email,
+                generate_password_hash(password),
+                phone,
+                role,
+                data.get("future_plan"),
+                (data.get("future_status") or "active"),
+                data.get("future_company_id"),
+                now,
+                now,
+            ),
+        )
+        db.commit()
+        created = find_professional_by_id(db, professional_id)
+        return jsonify({"success": True, "data": professional_row_to_payload(created)})
+
+    @app.route("/api/professionals/<professional_id>", methods=["PUT"])
+    def update_professional(professional_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
+
+        data = json_payload()
+        allowed_fields = {
+            "name",
+            "email",
+            "password",
+            "phone",
+            "role",
+            "future_plan",
+            "future_status",
+            "future_company_id",
+        }
+        if not any(field in data for field in allowed_fields):
+            abort(400, description="Nenhum campo valido para atualizacao.")
+
+        db = get_db()
+        existing = find_professional_by_id(db, professional_id)
+        if existing is None:
+            abort(404, description="Profissional nao encontrado.")
+
+        updates = []
+        params = []
+
+        if "name" in data:
+            name = (data.get("name") or "").strip()
+            if not name:
+                abort(400, description="name e obrigatorio.")
+            updates.append("name = ?")
+            params.append(name)
+
+        if "email" in data:
+            email = validate_email(data.get("email"))
+            duplicate = find_professional_by_email(db, email)
+            if duplicate is not None and duplicate["id"] != professional_id:
+                return auth_error("EMAIL_ALREADY_EXISTS", "Ja existe profissional com este email.", 409)
+            updates.append("email = ?")
+            params.append(email)
+
+        if "password" in data and not is_blank(data.get("password")):
+            password = validate_password(data.get("password"))
+            updates.append("password_hash = ?")
+            params.append(generate_password_hash(password))
+
+        if "phone" in data:
+            phone = (data.get("phone") or "").strip() or None
+            updates.append("phone = ?")
+            params.append(phone)
+
+        if "role" in data:
+            role = validate_role(data.get("role"))
+            updates.append("role = ?")
+            params.append(role)
+
+        if "future_plan" in data:
+            updates.append("future_plan = ?")
+            params.append(data.get("future_plan"))
+        if "future_status" in data:
+            updates.append("future_status = ?")
+            params.append(data.get("future_status"))
+        if "future_company_id" in data:
+            updates.append("future_company_id = ?")
+            params.append(data.get("future_company_id"))
+
+        updates.append("updated_at = ?")
+        params.append(now_utc_iso())
+        params.append(professional_id)
+
+        db.execute(
+            f"UPDATE professionals SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        db.commit()
+        updated = find_professional_by_id(db, professional_id)
+        return jsonify({"success": True, "data": professional_row_to_payload(updated)})
 
     # ----------------------
     # PACIENTES
@@ -592,9 +1099,13 @@ def create_app():
         db = get_db()
         rows = db.execute(
             """
-            SELECT a.*, p.nome
+            SELECT
+                a.*,
+                p.nome,
+                pr.name AS professional_name
             FROM agenda a
             LEFT JOIN pacientes p ON a.paciente_id = p.id
+            LEFT JOIN professionals pr ON a.professional_id = pr.id
             ORDER BY a.data, a.horario
             """
         ).fetchall()
@@ -610,23 +1121,64 @@ def create_app():
         if patient is None:
             abort(400, description="Paciente nÃ£o encontrado.")
         duration_minutes = parse_duration_minutes(data.get("duration"))
+        professional_id, professional_name = resolve_professional_for_appointment(db, data)
+
+        if (not is_blank(professional_id) or not is_blank(professional_name)) and not is_blank(data.get("date")) and not is_blank(data.get("time")):
+            if not is_blank(professional_id):
+                conflict_row = db.execute(
+                    """
+                    SELECT id
+                    FROM agenda
+                    WHERE professional_id = ?
+                      AND data = ?
+                      AND horario = ?
+                    LIMIT 1
+                    """,
+                    (professional_id, data.get("date"), data.get("time")),
+                ).fetchone()
+            else:
+                conflict_row = db.execute(
+                    """
+                    SELECT id
+                    FROM agenda
+                    WHERE profissional = ?
+                      AND data = ?
+                      AND horario = ?
+                    LIMIT 1
+                    """,
+                    (professional_name, data.get("date"), data.get("time")),
+                ).fetchone()
+            if conflict_row is not None:
+                return (
+                    jsonify(
+                        {
+                            "success": False,
+                            "error": {
+                                "code": "APPOINTMENT_CONFLICT",
+                                "message": "Ja existe um agendamento para este profissional neste horario.",
+                            },
+                        }
+                    ),
+                    409,
+                )
 
         new_id = str(uuid.uuid4())
         db.execute(
             """
             INSERT INTO agenda
-            (id, paciente_id, data, horario, duracao, status, motivo, profissional, observacoes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, paciente_id, professional_id, data, horario, duracao, status, motivo, profissional, observacoes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
                 patient["id"],
+                professional_id,
                 data.get("date"),
                 data.get("time"),
                 duration_minutes,
                 data.get("status", "agendado"),
                 data.get("reason"),
-                data.get("professional"),
+                professional_name,
                 data.get("notes"),
                 datetime.utcnow().isoformat(),
             ),
@@ -641,9 +1193,13 @@ def create_app():
 
         row = db.execute(
             """
-            SELECT a.*, p.nome
+            SELECT
+                a.*,
+                p.nome,
+                pr.name AS professional_name
             FROM agenda a
             LEFT JOIN pacientes p ON a.paciente_id = p.id
+            LEFT JOIN professionals pr ON a.professional_id = pr.id
             WHERE a.id = ?
             """,
             (new_id,),
@@ -658,7 +1214,7 @@ def create_app():
 
         existing = db.execute(
             """
-            SELECT id, paciente_id, data, horario, profissional, duracao
+            SELECT id, paciente_id, professional_id, data, horario, profissional, duracao
             FROM agenda
             WHERE id = ?
             """,
@@ -673,6 +1229,7 @@ def create_app():
         next_date = existing["data"]
         next_time = existing["horario"]
         next_professional = existing["profissional"]
+        next_professional_id = existing["professional_id"]
 
         if "patient_id" in data:
             patient_id = data.get("patient_id")
@@ -706,11 +1263,19 @@ def create_app():
             params.append(next_time)
 
         if "professional" in data:
-            next_professional = data.get("professional")
+            resolved_id, resolved_name = resolve_professional_for_appointment(db, data)
+            next_professional = resolved_name
+            next_professional_id = resolved_id
+            updates.append("professional_id = ?")
+            params.append(next_professional_id)
             updates.append("profissional = ?")
             params.append(next_professional)
         elif "professional_id" in data:
-            next_professional = data.get("professional_id")
+            resolved_id, resolved_name = resolve_professional_for_appointment(db, data)
+            next_professional = resolved_name
+            next_professional_id = resolved_id
+            updates.append("professional_id = ?")
+            params.append(next_professional_id)
             updates.append("profissional = ?")
             params.append(next_professional)
 
@@ -731,19 +1296,33 @@ def create_app():
         if not updates:
             abort(400, description="Nenhum campo válido para atualização.")
 
-        if not is_blank(next_professional) and not is_blank(next_date) and not is_blank(next_time):
-            conflict_row = db.execute(
-                """
-                SELECT id
-                FROM agenda
-                WHERE id <> ?
-                  AND profissional = ?
-                  AND data = ?
-                  AND horario = ?
-                LIMIT 1
-                """,
-                (appointment_id, next_professional, next_date, next_time),
-            ).fetchone()
+        if (not is_blank(next_professional) or not is_blank(next_professional_id)) and not is_blank(next_date) and not is_blank(next_time):
+            if not is_blank(next_professional_id):
+                conflict_row = db.execute(
+                    """
+                    SELECT id
+                    FROM agenda
+                    WHERE id <> ?
+                      AND professional_id = ?
+                      AND data = ?
+                      AND horario = ?
+                    LIMIT 1
+                    """,
+                    (appointment_id, next_professional_id, next_date, next_time),
+                ).fetchone()
+            else:
+                conflict_row = db.execute(
+                    """
+                    SELECT id
+                    FROM agenda
+                    WHERE id <> ?
+                      AND profissional = ?
+                      AND data = ?
+                      AND horario = ?
+                    LIMIT 1
+                    """,
+                    (appointment_id, next_professional, next_date, next_time),
+                ).fetchone()
             if conflict_row is not None:
                 app.logger.warning(
                     "Appointment conflict on update %s -> professional=%s date=%s time=%s",
@@ -777,9 +1356,13 @@ def create_app():
 
         row = db.execute(
             """
-            SELECT a.*, p.nome
+            SELECT
+                a.*,
+                p.nome,
+                pr.name AS professional_name
             FROM agenda a
             LEFT JOIN pacientes p ON a.paciente_id = p.id
+            LEFT JOIN professionals pr ON a.professional_id = pr.id
             WHERE a.id = ?
             """,
             (appointment_id,),
@@ -1493,6 +2076,12 @@ def create_app():
                 "path": "/financial",
                 "keywords": ["pagamento", "faturamento"],
             },
+            {
+                "id": "professionals",
+                "name": "Profissionais",
+                "path": "/professionals",
+                "keywords": ["equipe", "usuarios", "acesso"],
+            },
         ]
 
         page_results = []
@@ -1668,16 +2257,18 @@ def create_app():
             SELECT
                 a.id,
                 a.paciente_id,
+                a.professional_id,
                 p.nome AS paciente_nome,
                 a.data,
                 a.horario,
                 a.status,
                 a.motivo,
-                a.profissional,
+                COALESCE(pr.name, a.profissional) AS profissional,
                 a.observacoes,
                 a.created_at
             FROM agenda a
             LEFT JOIN pacientes p ON a.paciente_id = p.id
+            LEFT JOIN professionals pr ON a.professional_id = pr.id
             ORDER BY a.data, a.horario
             """
         ).fetchall()
@@ -1686,6 +2277,7 @@ def create_app():
             columns=[
                 "id",
                 "paciente_id",
+                "professional_id",
                 "paciente_nome",
                 "data",
                 "horario",
@@ -1743,9 +2335,13 @@ def create_app():
         today_str = datetime.utcnow().strftime("%Y-%m-%d")
         today_rows = db.execute(
             """
-            SELECT a.*, p.nome
+            SELECT
+                a.*,
+                p.nome,
+                pr.name AS professional_name
             FROM agenda a
             LEFT JOIN pacientes p ON a.paciente_id = p.id
+            LEFT JOIN professionals pr ON a.professional_id = pr.id
             WHERE a.data = ?
             ORDER BY a.horario
             """,

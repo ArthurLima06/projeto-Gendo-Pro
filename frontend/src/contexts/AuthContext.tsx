@@ -1,20 +1,41 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, ReactNode, useMemo } from "react";
+import { logoutUser, type AuthUser, type UserRole } from "@/lib/authService";
 
 export type PaymentStatus = "active" | "pending" | "overdue";
 
 interface AuthContextType {
   isAuthenticated: boolean;
+  currentUser: AuthUser | null;
   userEmail: string;
+  userRole: UserRole | null;
   paymentStatus: PaymentStatus;
-  login: (email?: string, token?: string) => void;
+  login: (user: AuthUser, token: string) => void;
   logout: () => void;
   setPaymentStatus: (status: PaymentStatus) => void;
   recheckPayment: () => void;
 }
 
+function readStoredUser(): AuthUser | null {
+  const raw = sessionStorage.getItem("gendo_user");
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as AuthUser;
+    if (!parsed?.id || !parsed?.email || !parsed?.name || !parsed?.role) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 const AuthContext = createContext<AuthContextType>({
   isAuthenticated: false,
+  currentUser: null,
   userEmail: "",
+  userRole: null,
   paymentStatus: "active",
   login: () => {},
   logout: () => {},
@@ -25,36 +46,36 @@ const AuthContext = createContext<AuthContextType>({
 export const useAuth = () => useContext(AuthContext);
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState(() =>
-    sessionStorage.getItem("gendo_auth") === "true"
-  );
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => readStoredUser());
 
-  const [userEmail, setUserEmail] = useState(() =>
-    sessionStorage.getItem("gendo_user_email") || ""
-  );
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    const hasAuthFlag = sessionStorage.getItem("gendo_auth") === "true";
+    const hasToken = !!sessionStorage.getItem("gendo_auth_token");
+    const hasUser = !!readStoredUser();
+    return hasAuthFlag && hasToken && hasUser;
+  });
 
   const [paymentStatus, setPaymentStatusState] = useState<PaymentStatus>(() =>
     (sessionStorage.getItem("gendo_payment_status") as PaymentStatus) || "active"
   );
 
-  const login = useCallback((email?: string, token?: string) => {
+  const login = useCallback((user: AuthUser, token: string) => {
     sessionStorage.setItem("gendo_auth", "true");
-    if (email) {
-      sessionStorage.setItem("gendo_user_email", email);
-      setUserEmail(email);
-    }
-    if (token) {
-      sessionStorage.setItem("gendo_auth_token", token);
-    }
+    sessionStorage.setItem("gendo_auth_token", token);
+    sessionStorage.setItem("gendo_user", JSON.stringify(user));
+    sessionStorage.setItem("gendo_user_email", user.email);
+    setCurrentUser(user);
     setIsAuthenticated(true);
   }, []);
 
   const logout = useCallback(() => {
+    void logoutUser();
     sessionStorage.removeItem("gendo_auth");
+    sessionStorage.removeItem("gendo_user");
     sessionStorage.removeItem("gendo_user_email");
     sessionStorage.removeItem("gendo_auth_token");
     setIsAuthenticated(false);
-    setUserEmail("");
+    setCurrentUser(null);
   }, []);
 
   const setPaymentStatus = useCallback((status: PaymentStatus) => {
@@ -67,9 +88,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setPaymentStatusState("active");
   }, []);
 
-  return (
-    <AuthContext.Provider value={{ isAuthenticated, userEmail, paymentStatus, login, logout, setPaymentStatus, recheckPayment }}>
-      {children}
-    </AuthContext.Provider>
+  const value = useMemo<AuthContextType>(
+    () => ({
+      isAuthenticated,
+      currentUser,
+      userEmail: currentUser?.email || "",
+      userRole: currentUser?.role || null,
+      paymentStatus,
+      login,
+      logout,
+      setPaymentStatus,
+      recheckPayment,
+    }),
+    [isAuthenticated, currentUser, paymentStatus, login, logout, setPaymentStatus, recheckPayment]
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useSimulatedLoading } from "@/hooks/useSimulatedLoading";
 import { toast } from "@/hooks/use-toast";
 import { getPatients, type Patient } from "@/services/patientsService";
+import { getProfessionals, type Professional } from "@/services/professionalsService";
 import { useAppointmentStore, type Appointment } from "@/stores/appointmentStore";
 import CalendarGrid from "@/components/scheduling/calendar/CalendarGrid";
 import EventModal, { type EventModalSubmitPayload } from "@/components/scheduling/calendar/EventModal";
@@ -33,8 +34,6 @@ import {
   type AppointmentRenderData,
 } from "@/components/scheduling/calendar/calendarUtils";
 
-const PROFESSIONAL_OPTIONS = ["Dr. Silva", "Dr. Costa", "Dr. Santos"];
-
 type ModalMode = "create" | "edit";
 
 interface ModalSeed {
@@ -56,6 +55,7 @@ interface ResizeState {
 
 const Scheduling = () => {
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [professionals, setProfessionals] = useState<Professional[]>([]);
   const [searchParams] = useSearchParams();
   const focusDateParam = searchParams.get("date");
   const isLoading = useSimulatedLoading(900);
@@ -104,7 +104,16 @@ const Scheduling = () => {
         setPatients(response.data);
       }
     };
+    const loadProfessionals = async () => {
+      const response = await getProfessionals();
+      if (response.success) {
+        setProfessionals(
+          response.data.filter((item) => (item.futureStatus || "active").toLowerCase() !== "inactive")
+        );
+      }
+    };
     loadPatients();
+    loadProfessionals();
   }, [fetchAppointments]);
 
   useEffect(() => {
@@ -183,6 +192,10 @@ const Scheduling = () => {
   const patientOptions = useMemo(() => {
     return [...patients].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
   }, [patients]);
+
+  const professionalOptions = useMemo(() => {
+    return [...professionals].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+  }, [professionals]);
 
   const appointmentsByDate = useMemo(() => {
     const grouped: Record<string, AppointmentRenderData[]> = {};
@@ -272,11 +285,13 @@ const Scheduling = () => {
 
     setIsScheduling(true);
     try {
+      const selectedProfessional = professionalOptions.find((item) => item.id === formProfessional);
       const created = await addAppointment({
         patient: formPatient,
         date: formDate,
         time: formTime,
-        professional: formProfessional,
+        professional: selectedProfessional?.name || "",
+        professional_id: selectedProfessional?.id,
         reason: formReason,
         notes: formNotes,
         duration: clampDuration(formDuration),
@@ -318,6 +333,7 @@ const Scheduling = () => {
         date: payload.date,
         time: payload.time,
         professional: payload.professional,
+        professional_id: payload.professional_id,
         reason: payload.reason,
         notes: payload.notes,
         duration: payload.durationMinutes,
@@ -544,8 +560,8 @@ const Scheduling = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+    <div className="h-full space-y-6">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3 xl:items-stretch">
         <Card className="border-border shadow-card xl:col-span-1">
           <CardHeader>
             <CardTitle className="text-base font-semibold">Agendar Consulta</CardTitle>
@@ -599,9 +615,9 @@ const Scheduling = () => {
                     <SelectValue placeholder="Selecionar profissional" />
                   </SelectTrigger>
                   <SelectContent>
-                    {PROFESSIONAL_OPTIONS.map((professional) => (
-                      <SelectItem key={professional} value={professional}>
-                        {professional}
+                    {professionalOptions.map((professional) => (
+                      <SelectItem key={professional.id} value={professional.id}>
+                        {professional.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -638,7 +654,7 @@ const Scheduling = () => {
           </CardContent>
         </Card>
 
-        <Card className="relative border-border shadow-card xl:col-span-2">
+        <Card className="relative border-border shadow-card xl:col-span-2 flex min-h-[70vh] flex-col xl:min-h-[calc(100vh-12rem)]">
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <CardTitle className="text-base font-semibold">Calendario</CardTitle>
             <div className="flex items-center gap-2">
@@ -671,7 +687,7 @@ const Scheduling = () => {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="p-0">
+          <CardContent className="p-0 flex-1 min-h-0">
             {isLoading ? (
               <div className="space-y-3 p-6">
                 {Array.from({ length: 8 }).map((_, row) => (
@@ -718,7 +734,7 @@ const Scheduling = () => {
         mode={modalMode}
         appointment={editingAppointment}
         patients={patients}
-        professionals={PROFESSIONAL_OPTIONS}
+        professionals={professionalOptions}
         initialDate={modalSeed.date}
         initialTime={modalSeed.time}
         initialDurationMinutes={modalSeed.durationMinutes}

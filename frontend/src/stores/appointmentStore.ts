@@ -4,6 +4,7 @@ import {
   createAppointment as createAppointmentApi,
   updateAppointment as updateAppointmentApi,
   deleteAppointment as deleteAppointmentApi,
+  type CreateAppointmentPayload,
   type UpdateAppointmentPayload,
   type Appointment,
 } from "@/services/appointmentsService";
@@ -23,7 +24,7 @@ interface AppointmentStore {
   error: string;
   selectedDate: string | null;
   fetchAppointments: () => Promise<void>;
-  addAppointment: (appt: Omit<Appointment, "id" | "color">) => Promise<Appointment | null>;
+  addAppointment: (appt: CreateAppointmentPayload) => Promise<Appointment | null>;
   updateAppointment: (id: string, appt: UpdateAppointmentPayload) => Promise<ApiResponse<Appointment>>;
   removeAppointment: (id: string) => Promise<void>;
   setSelectedDate: (date: string | null) => void;

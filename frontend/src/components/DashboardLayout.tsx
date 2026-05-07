@@ -10,10 +10,11 @@ const pageTitles: Record<string, string> = {
   "/": "Painel",
   "/patients/register": "Cadastro de Pacientes",
   "/scheduling": "Agendamento de Consultas",
-  "/records": "Prontuários",
+  "/records": "Prontuarios",
   "/patients": "Lista de Pacientes",
-  "/reports": "Relatórios",
+  "/reports": "Relatorios",
   "/financial": "Financeiro",
+  "/professionals": "Profissionais",
 };
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -58,9 +59,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
               <UserProfileDropdown />
             </div>
           </header>
-          <main className="flex-1 overflow-y-auto p-4 md:p-8">
-            {children}
-          </main>
+          <main className="flex-1 overflow-y-auto p-4 md:p-8">{children}</main>
         </div>
       </div>
     </SidebarProvider>

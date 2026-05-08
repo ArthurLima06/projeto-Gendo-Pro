@@ -626,7 +626,7 @@ const Scheduling = () => {
               <div className="space-y-2">
                 <Label>Motivo</Label>
                 <Input
-                  placeholder="Motivo da consulta"
+                  placeholder="Motivo da consulta/exame"
                   value={formReason}
                   onChange={(event) => setFormReason(event.target.value)}
                 />

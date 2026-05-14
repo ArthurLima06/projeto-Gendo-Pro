@@ -6,6 +6,7 @@ import unicodedata
 import uuid
 import hashlib
 import secrets
+import json
 from datetime import datetime, timedelta
 from io import BytesIO
 from urllib.parse import quote
@@ -53,7 +54,17 @@ def create_app():
     VALID_ROLES = {"admin", "common"}
     SESSION_TTL_DAYS = 30
     PASSWORD_MIN_LENGTH = 8
-    PATIENT_COMMON_FIELDS = {"id", "name", "phone", "email", "createdAt", "updatedAt"}
+    PATIENT_COMMON_FIELDS = {
+        "id",
+        "name",
+        "phone",
+        "email",
+        "careType",
+        "agreementName",
+        "agreementPlan",
+        "createdAt",
+        "updatedAt",
+    }
 
     def row_to_dict(row):
         return dict(row) if row else None
@@ -106,6 +117,11 @@ def create_app():
         for label, value in meta:
             if value:
                 add_line(f"{label}: {value}", size=10)
+        care_type = str(patient.get("forma_atendimento") or "particular").strip().lower()
+        add_line(f"Tipo de Atendimento: {'Convenio' if care_type == 'convenio' else 'Particular'}", size=10)
+        if care_type == "convenio":
+            add_line(f"Convenio: {patient.get('convenio_nome') or '-'}", size=10)
+            add_line(f"Plano: {patient.get('plano_convenio') or '-'}", size=10)
         add_line("-", size=8)
 
         doc.setFont("Helvetica-Bold", 12)
@@ -155,6 +171,38 @@ def create_app():
             return float(value)
         except (TypeError, ValueError):
             abort(400, description=f"{field_name} precisa ser numÃ©rico.")
+
+    def parse_care_type(value, required=True):
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            if required:
+                abort(400, description="forma_atendimento e obrigatoria.")
+            return "particular"
+        if normalized not in {"particular", "convenio"}:
+            abort(400, description="forma_atendimento invalida. Use particular ou convenio.")
+        return normalized
+
+    def parse_agreement_status(value):
+        normalized = str(value or "").strip().lower()
+        if normalized not in {"ativo", "inativo"}:
+            abort(400, description="status invalido. Use ativo ou inativo.")
+        return normalized
+
+    def parse_agreement_plans(raw_plans):
+        if raw_plans is None:
+            return []
+        if not isinstance(raw_plans, list):
+            abort(400, description="planos precisa ser uma lista.")
+        plans = []
+        for item in raw_plans:
+            plan = str(item or "").strip()
+            if not plan:
+                continue
+            if plan not in plans:
+                plans.append(plan)
+        if not plans:
+            abort(400, description="Informe pelo menos um plano aceito.")
+        return plans
 
     def clamp_duration_minutes(value):
         return max(15, min(1440, value))
@@ -234,6 +282,7 @@ def create_app():
         return {
             "id": row["id"],
             "name": row["name"],
+            "specialty": row["specialty"] if "specialty" in set(row.keys()) else None,
             "email": row["email"],
             "phone": row["phone"],
             "role": row["role"],
@@ -419,6 +468,71 @@ def create_app():
         row = db.execute("SELECT nome FROM pacientes WHERE id = ?", (paciente_id,)).fetchone()
         return row["nome"] if row else None
 
+    def parse_stored_agreement_plans(raw_value):
+        if raw_value is None:
+            return []
+        if isinstance(raw_value, str):
+            raw_text = raw_value.strip()
+            if not raw_text:
+                return []
+            try:
+                parsed = json.loads(raw_text)
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            except json.JSONDecodeError:
+                return [part.strip() for part in raw_text.split(",") if part.strip()]
+        if isinstance(raw_value, list):
+            return [str(item).strip() for item in raw_value if str(item).strip()]
+        return []
+
+    def agreement_row_to_payload(row):
+        if row is None:
+            return None
+        plans = parse_stored_agreement_plans(row["planos"] if "planos" in set(row.keys()) else "[]")
+        return {
+            "id": row["id"],
+            "name": row["nome"],
+            "careType": row["tipo_atendimento"],
+            "plans": plans,
+            "notes": row["observacoes"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    def find_agreement_by_id(db, agreement_id):
+        if is_blank(agreement_id):
+            return None
+        return db.execute(
+            "SELECT * FROM convenios WHERE id = ? LIMIT 1",
+            (agreement_id,),
+        ).fetchone()
+
+    def resolve_agreement_for_care(db, care_type, agreement_id, agreement_plan, require_active=True):
+        normalized_care_type = parse_care_type(care_type)
+        if normalized_care_type == "particular":
+            return "particular", None, None, None
+
+        if is_blank(agreement_id):
+            abort(400, description="convenio_id e obrigatorio para atendimento por convenio.")
+        if is_blank(agreement_plan):
+            abort(400, description="plano_convenio e obrigatorio para atendimento por convenio.")
+
+        agreement = find_agreement_by_id(db, agreement_id)
+        if agreement is None:
+            abort(400, description="Convenio nao encontrado.")
+
+        agreement_status = str(agreement["status"] or "").strip().lower()
+        if require_active and agreement_status != "ativo":
+            abort(400, description="Convenio inativo nao pode ser utilizado.")
+
+        normalized_plan = str(agreement_plan).strip()
+        available_plans = parse_stored_agreement_plans(agreement["planos"])
+        if normalized_plan not in available_plans:
+            abort(400, description="Plano do convenio invalido para o convenio selecionado.")
+
+        return "convenio", agreement["id"], agreement["nome"], normalized_plan
+
     def patient_row_to_payload(row, user_role="admin"):
         if row is None:
             return None
@@ -438,6 +552,10 @@ def create_app():
             "number": row["numero"] if "numero" in columns else None,
             "district": row["bairro"] if "bairro" in columns else None,
             "city": row["cidade"] if "cidade" in columns else None,
+            "careType": row["forma_atendimento"] if "forma_atendimento" in columns else "particular",
+            "agreementId": row["convenio_id"] if "convenio_id" in columns else None,
+            "agreementName": row["convenio_nome"] if "convenio_nome" in columns else None,
+            "agreementPlan": row["plano_convenio"] if "plano_convenio" in columns else None,
             "notes": row["observacoes"],
             "createdAt": row["created_at"],
             "updatedAt": updated_at,
@@ -470,6 +588,10 @@ def create_app():
                     "numero": payload.get("number"),
                     "bairro": payload.get("district"),
                     "cidade": payload.get("city"),
+                    "forma_atendimento": payload.get("careType"),
+                    "convenio_id": payload.get("agreementId"),
+                    "convenio_nome": payload.get("agreementName"),
+                    "plano_convenio": payload.get("agreementPlan"),
                     "observacoes": payload.get("notes"),
                 }
             )
@@ -479,7 +601,12 @@ def create_app():
         if not name:
             return None
         return db.execute(
-            "SELECT id, nome FROM pacientes WHERE nome = ? COLLATE NOCASE LIMIT 1",
+            """
+            SELECT id, nome, forma_atendimento, convenio_id, convenio_nome, plano_convenio
+            FROM pacientes
+            WHERE nome = ? COLLATE NOCASE
+            LIMIT 1
+            """,
             (name,),
         ).fetchone()
 
@@ -489,17 +616,29 @@ def create_app():
         columns = set(row.keys())
         duration_minutes = coerce_duration_minutes(row["duracao"]) if "duracao" in columns else 60
         professional_name = row["professional_name"] if "professional_name" in columns and row["professional_name"] else row["profissional"]
+        professional_specialty = row["professional_specialty"] if "professional_specialty" in columns else None
+        if isinstance(professional_specialty, str):
+            professional_specialty = professional_specialty.strip() or None
+        professional_display = professional_name
+        if professional_name and professional_specialty:
+            professional_display = f"{professional_name} - {professional_specialty}"
         return {
             "id": row["id"],
             "patient": row["nome"],
             "date": row["data"],
             "time": row["horario"],
             "professional": professional_name,
+            "professionalSpecialty": professional_specialty,
+            "professionalDisplay": professional_display,
             "professionalId": row["professional_id"] if "professional_id" in columns else None,
             "reason": row["motivo"],
             "notes": row["observacoes"],
             "status": row["status"],
             "duration": duration_minutes,
+            "careType": row["forma_atendimento"] if "forma_atendimento" in columns else "particular",
+            "agreementId": row["convenio_id"] if "convenio_id" in columns else None,
+            "agreementName": row["convenio_nome"] if "convenio_nome" in columns else None,
+            "agreementPlan": row["plano_convenio"] if "plano_convenio" in columns else None,
         }
 
     def medical_record_row_to_payload(row):
@@ -529,6 +668,10 @@ def create_app():
             "method": row["metodo_pagamento"] if "metodo_pagamento" in set(row.keys()) else None,
             "notes": row["observacoes"] if "observacoes" in set(row.keys()) else None,
             "registeredAt": row["created_at"],
+            "careType": row["forma_atendimento"] if "forma_atendimento" in set(row.keys()) else "particular",
+            "agreementId": row["convenio_id"] if "convenio_id" in set(row.keys()) else None,
+            "agreementName": row["convenio_nome"] if "convenio_nome" in set(row.keys()) else None,
+            "agreementPlan": row["plano_convenio"] if "plano_convenio" in set(row.keys()) else None,
         }
 
     def notification_row_to_payload(row):
@@ -721,7 +864,7 @@ def create_app():
         db = get_db()
         rows = db.execute(
             """
-            SELECT id, name, email, phone, role, future_plan, future_status, future_company_id, created_at, updated_at
+            SELECT id, name, specialty, email, phone, role, future_plan, future_status, future_company_id, created_at, updated_at
             FROM professionals
             ORDER BY name
             """
@@ -742,6 +885,9 @@ def create_app():
         password = validate_password(data.get("password"))
         role = validate_role(data.get("role"))
         phone = (data.get("phone") or "").strip() or None
+        specialty = (data.get("specialty") or "").strip()
+        if not specialty:
+            abort(400, description="specialty e obrigatoria.")
 
         db = get_db()
         existing = find_professional_by_email(db, email)
@@ -753,12 +899,13 @@ def create_app():
         db.execute(
             """
             INSERT INTO professionals
-            (id, name, email, password_hash, phone, role, future_plan, future_status, future_company_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, name, specialty, email, password_hash, phone, role, future_plan, future_status, future_company_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 professional_id,
                 name,
+                specialty,
                 email,
                 generate_password_hash(password),
                 phone,
@@ -783,6 +930,7 @@ def create_app():
         data = json_payload()
         allowed_fields = {
             "name",
+            "specialty",
             "email",
             "password",
             "phone",
@@ -816,6 +964,13 @@ def create_app():
                 return auth_error("EMAIL_ALREADY_EXISTS", "Ja existe profissional com este email.", 409)
             updates.append("email = ?")
             params.append(email)
+
+        if "specialty" in data:
+            specialty = (data.get("specialty") or "").strip()
+            if not specialty:
+                abort(400, description="specialty e obrigatoria.")
+            updates.append("specialty = ?")
+            params.append(specialty)
 
         if "password" in data and not is_blank(data.get("password")):
             password = validate_password(data.get("password"))
@@ -883,6 +1038,166 @@ def create_app():
         return jsonify({"success": True, "data": {"id": professional_id, "deleted": True}})
 
     # ----------------------
+    # CONVENIOS
+    # ----------------------
+
+    @app.route("/api/agreements", methods=["GET"])
+    def list_agreements():
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
+
+        status_filter = (request.args.get("status") or "").strip().lower()
+        only_active = (request.args.get("active_only") or "").strip().lower() in {"1", "true", "yes"}
+
+        where_clauses = []
+        params = []
+        if status_filter:
+            if status_filter not in {"ativo", "inativo"}:
+                abort(400, description="status invalido. Use ativo ou inativo.")
+            where_clauses.append("status = ?")
+            params.append(status_filter)
+        if only_active:
+            where_clauses.append("status = ?")
+            params.append("ativo")
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        db = get_db()
+        rows = db.execute(
+            f"""
+            SELECT *
+            FROM convenios
+            {where_sql}
+            ORDER BY nome
+            """,
+            params,
+        ).fetchall()
+        return jsonify({"success": True, "data": [agreement_row_to_payload(row) for row in rows]})
+
+    @app.route("/api/agreements", methods=["POST"])
+    def create_agreement():
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
+
+        data = json_payload()
+        name = str(data.get("name") or "").strip()
+        if not name:
+            abort(400, description="name e obrigatorio.")
+        plans = parse_agreement_plans(data.get("plans"))
+        status = parse_agreement_status(data.get("status") or "ativo")
+        care_type = (data.get("careType") or "").strip() or None
+        notes = (data.get("notes") or "").strip() or None
+
+        db = get_db()
+        duplicate = db.execute(
+            "SELECT id FROM convenios WHERE nome = ? COLLATE NOCASE LIMIT 1",
+            (name,),
+        ).fetchone()
+        if duplicate is not None:
+            abort(409, description="Ja existe convenio com este nome.")
+
+        agreement_id = str(uuid.uuid4())
+        now = now_utc_iso()
+        db.execute(
+            """
+            INSERT INTO convenios
+            (id, nome, tipo_atendimento, planos, observacoes, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                agreement_id,
+                name,
+                care_type,
+                json.dumps(plans, ensure_ascii=False),
+                notes,
+                status,
+                now,
+                now,
+            ),
+        )
+        db.commit()
+        row = find_agreement_by_id(db, agreement_id)
+        return jsonify({"success": True, "data": agreement_row_to_payload(row)})
+
+    @app.route("/api/agreements/<agreement_id>", methods=["PUT"])
+    def update_agreement(agreement_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
+
+        data = json_payload()
+        allowed_fields = {"name", "careType", "plans", "notes", "status"}
+        if not any(field in data for field in allowed_fields):
+            abort(400, description="Nenhum campo valido para atualizacao.")
+
+        db = get_db()
+        existing = find_agreement_by_id(db, agreement_id)
+        if existing is None:
+            abort(404, description="Convenio nao encontrado.")
+
+        updates = []
+        params = []
+
+        if "name" in data:
+            name = str(data.get("name") or "").strip()
+            if not name:
+                abort(400, description="name e obrigatorio.")
+            duplicate = db.execute(
+                "SELECT id FROM convenios WHERE nome = ? COLLATE NOCASE AND id <> ? LIMIT 1",
+                (name, agreement_id),
+            ).fetchone()
+            if duplicate is not None:
+                abort(409, description="Ja existe convenio com este nome.")
+            updates.append("nome = ?")
+            params.append(name)
+
+        if "careType" in data:
+            care_type = (data.get("careType") or "").strip() or None
+            updates.append("tipo_atendimento = ?")
+            params.append(care_type)
+
+        if "plans" in data:
+            plans = parse_agreement_plans(data.get("plans"))
+            updates.append("planos = ?")
+            params.append(json.dumps(plans, ensure_ascii=False))
+
+        if "notes" in data:
+            notes = (data.get("notes") or "").strip() or None
+            updates.append("observacoes = ?")
+            params.append(notes)
+
+        if "status" in data:
+            updates.append("status = ?")
+            params.append(parse_agreement_status(data.get("status")))
+
+        updates.append("updated_at = ?")
+        params.append(now_utc_iso())
+        params.append(agreement_id)
+        db.execute(
+            f"UPDATE convenios SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        db.commit()
+        row = find_agreement_by_id(db, agreement_id)
+        return jsonify({"success": True, "data": agreement_row_to_payload(row)})
+
+    @app.route("/api/agreements/<agreement_id>", methods=["DELETE"])
+    def delete_agreement(agreement_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
+
+        db = get_db()
+        row = find_agreement_by_id(db, agreement_id)
+        if row is None:
+            abort(404, description="Convenio nao encontrado.")
+
+        db.execute("DELETE FROM convenios WHERE id = ?", (agreement_id,))
+        db.commit()
+        return jsonify({"success": True, "data": {"id": agreement_id, "deleted": True}})
+
+    # ----------------------
     # PACIENTES
     # ----------------------
 
@@ -905,16 +1220,24 @@ def create_app():
 
         require_fields(data, ["nome"])
         cep_value = normalize_cep(data.get("cep"))
+        db = get_db()
+
+        care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
+            db,
+            data.get("forma_atendimento") or data.get("careType") or "particular",
+            data.get("convenio_id") or data.get("agreementId"),
+            data.get("plano_convenio") or data.get("agreementPlan"),
+            require_active=True,
+        )
 
         new_id = str(uuid.uuid4())
-
-        db = get_db()
+        now = datetime.utcnow().isoformat()
 
         db.execute(
             """
             INSERT INTO pacientes
-            (id, nome, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, observacoes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, nome, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, forma_atendimento, convenio_id, convenio_nome, plano_convenio, observacoes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
@@ -929,8 +1252,13 @@ def create_app():
                 data.get("numero"),
                 data.get("bairro"),
                 data.get("cidade"),
+                care_type,
+                agreement_id,
+                agreement_name,
+                agreement_plan,
                 data.get("observacoes"),
-                datetime.utcnow().isoformat(),
+                now,
+                now,
             ),
         )
 
@@ -975,15 +1303,28 @@ def create_app():
         ]
 
         updates = {col: data[col] for col in allowed_columns if col in data}
+        db = get_db()
+        if any(key in data for key in {"forma_atendimento", "convenio_id", "plano_convenio", "careType", "agreementId", "agreementPlan"}):
+            care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
+                db,
+                data.get("forma_atendimento") or data.get("careType") or "particular",
+                data.get("convenio_id") or data.get("agreementId"),
+                data.get("plano_convenio") or data.get("agreementPlan"),
+                require_active=True,
+            )
+            updates["forma_atendimento"] = care_type
+            updates["convenio_id"] = agreement_id
+            updates["convenio_nome"] = agreement_name
+            updates["plano_convenio"] = agreement_plan
         if not updates:
             abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
         if "cep" in updates:
             updates["cep"] = normalize_cep(updates.get("cep"))
+        updates["updated_at"] = now_utc_iso()
 
         set_clause = ", ".join(f"{col} = ?" for col in updates)
         params = list(updates.values()) + [paciente_id]
 
-        db = get_db()
         cursor = db.execute(
             f"UPDATE pacientes SET {set_clause} WHERE id = ?",
             params,
@@ -1022,7 +1363,7 @@ def create_app():
         if not isinstance(user, dict):
             return user
         data = json_payload()
-        require_fields(data, ["name", "phone", "email"])
+        require_fields(data, ["name", "phone", "email", "careType"])
         age_value = data.get("age")
         if age_value is not None and age_value != "":
             try:
@@ -1035,11 +1376,19 @@ def create_app():
 
         new_id = str(uuid.uuid4())
         db = get_db()
+        care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
+            db,
+            data.get("careType"),
+            data.get("agreementId"),
+            data.get("agreementPlan"),
+            require_active=True,
+        )
+        now = datetime.utcnow().isoformat()
         db.execute(
             """
             INSERT INTO pacientes
-            (id, nome, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, observacoes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, nome, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, forma_atendimento, convenio_id, convenio_nome, plano_convenio, observacoes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
@@ -1054,8 +1403,13 @@ def create_app():
                 data.get("number"),
                 data.get("district"),
                 data.get("city"),
+                care_type,
+                agreement_id,
+                agreement_name,
+                agreement_plan,
                 data.get("notes"),
-                datetime.utcnow().isoformat(),
+                now,
+                now,
             ),
         )
         db.commit()
@@ -1084,6 +1438,7 @@ def create_app():
         }
         updates = []
         params = []
+        db = get_db()
         for field, column in mapping.items():
             if field in data:
                 value = data[field]
@@ -1099,11 +1454,30 @@ def create_app():
                     value = normalize_cep(value)
                 updates.append(f"{column} = ?")
                 params.append(value)
+
+        if any(field in data for field in {"careType", "agreementId", "agreementPlan"}):
+            care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
+                db,
+                data.get("careType") or "particular",
+                data.get("agreementId"),
+                data.get("agreementPlan"),
+                require_active=True,
+            )
+            updates.extend(
+                [
+                    "forma_atendimento = ?",
+                    "convenio_id = ?",
+                    "convenio_nome = ?",
+                    "plano_convenio = ?",
+                ]
+            )
+            params.extend([care_type, agreement_id, agreement_name, agreement_plan])
         if not updates:
             abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
+        updates.append("updated_at = ?")
+        params.append(now_utc_iso())
         params.append(patient_id)
 
-        db = get_db()
         cursor = db.execute(
             f"UPDATE pacientes SET {', '.join(updates)} WHERE id = ?",
             params,
@@ -1152,14 +1526,30 @@ def create_app():
         db = get_db()
 
         ensure_patient_exists(db, data.get("paciente_id"))
+        patient_row = db.execute(
+            """
+            SELECT forma_atendimento, convenio_id, convenio_nome, plano_convenio
+            FROM pacientes
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (data.get("paciente_id"),),
+        ).fetchone()
+        care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
+            db,
+            data.get("forma_atendimento") or (patient_row["forma_atendimento"] if patient_row else "particular"),
+            data.get("convenio_id") or (patient_row["convenio_id"] if patient_row else None),
+            data.get("plano_convenio") or (patient_row["plano_convenio"] if patient_row else None),
+            require_active=True,
+        )
 
         new_id = str(uuid.uuid4())
 
         db.execute(
             """
             INSERT INTO agenda
-            (id, paciente_id, data, horario, status, motivo, profissional, observacoes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, paciente_id, data, horario, status, motivo, profissional, forma_atendimento, convenio_id, convenio_nome, plano_convenio, observacoes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
@@ -1169,6 +1559,10 @@ def create_app():
                 data.get("status", "agendado"),
                 data.get("motivo"),
                 data.get("profissional"),
+                care_type,
+                agreement_id,
+                agreement_name,
+                agreement_plan,
                 data.get("observacoes"),
                 datetime.utcnow().isoformat(),
             ),
@@ -1191,7 +1585,18 @@ def create_app():
     @app.route("/api/agenda/<agenda_id>", methods=["PATCH"])
     def update_agenda(agenda_id):
         data = json_payload()
-        allowed = ["paciente_id", "data", "horario", "status", "motivo", "profissional", "observacoes"]
+        allowed = [
+            "paciente_id",
+            "data",
+            "horario",
+            "status",
+            "motivo",
+            "profissional",
+            "observacoes",
+            "forma_atendimento",
+            "convenio_id",
+            "plano_convenio",
+        ]
         updates = {key: data[key] for key in allowed if key in data}
         if not updates:
             abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
@@ -1199,6 +1604,19 @@ def create_app():
         db = get_db()
         if "paciente_id" in updates:
             ensure_patient_exists(db, updates["paciente_id"])
+
+        if any(key in updates for key in {"forma_atendimento", "convenio_id", "plano_convenio"}):
+            care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
+                db,
+                updates.get("forma_atendimento") or "particular",
+                updates.get("convenio_id"),
+                updates.get("plano_convenio"),
+                require_active=True,
+            )
+            updates["forma_atendimento"] = care_type
+            updates["convenio_id"] = agreement_id
+            updates["convenio_nome"] = agreement_name
+            updates["plano_convenio"] = agreement_plan
 
         set_clause = ", ".join(f"{key} = ?" for key in updates)
         params = list(updates.values()) + [agenda_id]
@@ -1230,7 +1648,8 @@ def create_app():
             SELECT
                 a.*,
                 p.nome,
-                pr.name AS professional_name
+                pr.name AS professional_name,
+                pr.specialty AS professional_specialty
             FROM agenda a
             LEFT JOIN pacientes p ON a.paciente_id = p.id
             LEFT JOIN professionals pr ON a.professional_id = pr.id
@@ -1243,13 +1662,20 @@ def create_app():
     @app.route("/api/appointments", methods=["POST"])
     def create_appointment_v2():
         data = json_payload()
-        require_fields(data, ["patient", "date", "time"])
+        require_fields(data, ["patient", "date", "time", "careType"])
         db = get_db()
         patient = find_patient_by_name(db, data.get("patient"))
         if patient is None:
             abort(400, description="Paciente nÃ£o encontrado.")
         duration_minutes = parse_duration_minutes(data.get("duration"))
         professional_id, professional_name = resolve_professional_for_appointment(db, data)
+        care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
+            db,
+            data.get("careType"),
+            data.get("agreementId"),
+            data.get("agreementPlan"),
+            require_active=True,
+        )
 
         if (not is_blank(professional_id) or not is_blank(professional_name)) and not is_blank(data.get("date")) and not is_blank(data.get("time")):
             if not is_blank(professional_id):
@@ -1294,8 +1720,8 @@ def create_app():
         db.execute(
             """
             INSERT INTO agenda
-            (id, paciente_id, professional_id, data, horario, duracao, status, motivo, profissional, observacoes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, paciente_id, professional_id, data, horario, duracao, status, motivo, profissional, forma_atendimento, convenio_id, convenio_nome, plano_convenio, observacoes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
@@ -1307,6 +1733,10 @@ def create_app():
                 data.get("status", "agendado"),
                 data.get("reason"),
                 professional_name,
+                care_type,
+                agreement_id,
+                agreement_name,
+                agreement_plan,
                 data.get("notes"),
                 datetime.utcnow().isoformat(),
             ),
@@ -1324,7 +1754,8 @@ def create_app():
             SELECT
                 a.*,
                 p.nome,
-                pr.name AS professional_name
+                pr.name AS professional_name,
+                pr.specialty AS professional_specialty
             FROM agenda a
             LEFT JOIN pacientes p ON a.paciente_id = p.id
             LEFT JOIN professionals pr ON a.professional_id = pr.id
@@ -1342,7 +1773,7 @@ def create_app():
 
         existing = db.execute(
             """
-            SELECT id, paciente_id, professional_id, data, horario, profissional, duracao
+            SELECT id, paciente_id, professional_id, data, horario, profissional, duracao, forma_atendimento, convenio_id, convenio_nome, plano_convenio
             FROM agenda
             WHERE id = ?
             """,
@@ -1358,6 +1789,9 @@ def create_app():
         next_time = existing["horario"]
         next_professional = existing["profissional"]
         next_professional_id = existing["professional_id"]
+        next_care_type = existing["forma_atendimento"] if "forma_atendimento" in set(existing.keys()) else "particular"
+        next_agreement_id = existing["convenio_id"] if "convenio_id" in set(existing.keys()) else None
+        next_agreement_plan = existing["plano_convenio"] if "plano_convenio" in set(existing.keys()) else None
 
         if "patient_id" in data:
             patient_id = data.get("patient_id")
@@ -1420,6 +1854,24 @@ def create_app():
         if "duration" in data:
             updates.append("duracao = ?")
             params.append(parse_duration_minutes(data.get("duration")))
+
+        if any(field in data for field in {"careType", "agreementId", "agreementPlan"}):
+            next_care_type, next_agreement_id, next_agreement_name, next_agreement_plan = resolve_agreement_for_care(
+                db,
+                data.get("careType") or next_care_type,
+                data.get("agreementId") if "agreementId" in data else next_agreement_id,
+                data.get("agreementPlan") if "agreementPlan" in data else next_agreement_plan,
+                require_active=True,
+            )
+            updates.extend(
+                [
+                    "forma_atendimento = ?",
+                    "convenio_id = ?",
+                    "convenio_nome = ?",
+                    "plano_convenio = ?",
+                ]
+            )
+            params.extend([next_care_type, next_agreement_id, next_agreement_name, next_agreement_plan])
 
         if not updates:
             abort(400, description="Nenhum campo válido para atualização.")
@@ -1487,7 +1939,8 @@ def create_app():
             SELECT
                 a.*,
                 p.nome,
-                pr.name AS professional_name
+                pr.name AS professional_name,
+                pr.specialty AS professional_specialty
             FROM agenda a
             LEFT JOIN pacientes p ON a.paciente_id = p.id
             LEFT JOIN professionals pr ON a.professional_id = pr.id
@@ -1628,27 +2081,44 @@ def create_app():
 
         data = json_payload()
 
-        require_fields(data, ["paciente_id", "data", "valor", "status"])
+        require_fields(data, ["paciente_id", "data", "valor"])
 
         db = get_db()
 
         ensure_patient_exists(db, data.get("paciente_id"))
+        care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
+            db,
+            data.get("forma_atendimento") or "particular",
+            data.get("convenio_id"),
+            data.get("plano_convenio"),
+            require_active=True,
+        )
+        status_value = str(data.get("status") or "").strip()
+        if care_type == "particular":
+            if not status_value:
+                abort(400, description="status e obrigatorio para atendimento particular.")
+        else:
+            status_value = "Convenio"
 
         new_id = str(uuid.uuid4())
 
         db.execute(
             """
             INSERT INTO financeiro
-            (id, paciente_id, data, valor, status, metodo_pagamento, observacoes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (id, paciente_id, data, valor, status, metodo_pagamento, forma_atendimento, convenio_id, convenio_nome, plano_convenio, observacoes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
                 data.get("paciente_id"),
                 data.get("data"),
                 parse_float("valor", data.get("valor")),
-                data.get("status"),
+                status_value,
                 data.get("metodo_pagamento"),
+                care_type,
+                agreement_id,
+                agreement_name,
+                agreement_plan,
                 data.get("observacoes"),
                 datetime.utcnow().isoformat(),
             ),
@@ -1674,7 +2144,17 @@ def create_app():
         if not isinstance(user, dict):
             return user
         data = json_payload()
-        allowed = ["paciente_id", "data", "valor", "status", "metodo_pagamento", "observacoes"]
+        allowed = [
+            "paciente_id",
+            "data",
+            "valor",
+            "status",
+            "metodo_pagamento",
+            "observacoes",
+            "forma_atendimento",
+            "convenio_id",
+            "plano_convenio",
+        ]
         updates = {key: data[key] for key in allowed if key in data}
         if not updates:
             abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
@@ -1685,6 +2165,23 @@ def create_app():
 
         if "valor" in updates:
             updates["valor"] = parse_float("valor", updates["valor"])
+
+        if any(key in updates for key in {"forma_atendimento", "convenio_id", "plano_convenio"}):
+            care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
+                db,
+                updates.get("forma_atendimento") or "particular",
+                updates.get("convenio_id"),
+                updates.get("plano_convenio"),
+                require_active=True,
+            )
+            updates["forma_atendimento"] = care_type
+            updates["convenio_id"] = agreement_id
+            updates["convenio_nome"] = agreement_name
+            updates["plano_convenio"] = agreement_plan
+            if care_type == "convenio":
+                updates["status"] = "Convenio"
+            elif "status" in updates and is_blank(updates.get("status")):
+                abort(400, description="status e obrigatorio para atendimento particular.")
 
         set_clause = ", ".join(f"{key} = ?" for key in updates)
         params = list(updates.values()) + [lancamento_id]
@@ -1734,27 +2231,45 @@ def create_app():
         if not isinstance(user, dict):
             return user
         data = json_payload()
-        require_fields(data, ["patient", "date", "amount", "status"])
+        require_fields(data, ["patient", "date", "amount", "careType"])
         db = get_db()
         patient = find_patient_by_name(db, data.get("patient"))
         if patient is None:
             abort(400, description="Paciente nÃ£o encontrado.")
 
         amount_value = parse_float("amount", data.get("amount"))
+        care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
+            db,
+            data.get("careType"),
+            data.get("agreementId"),
+            data.get("agreementPlan"),
+            require_active=True,
+        )
+        status_value = str(data.get("status") or "").strip()
+        if care_type == "particular":
+            if not status_value:
+                abort(400, description="status e obrigatorio para atendimento particular.")
+        else:
+            status_value = "Convenio"
+
         new_id = str(uuid.uuid4())
         db.execute(
             """
             INSERT INTO financeiro
-            (id, paciente_id, data, valor, status, metodo_pagamento, observacoes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (id, paciente_id, data, valor, status, metodo_pagamento, forma_atendimento, convenio_id, convenio_nome, plano_convenio, observacoes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
                 patient["id"],
                 data.get("date"),
                 amount_value,
-                data.get("status"),
+                status_value,
                 data.get("method"),
+                care_type,
+                agreement_id,
+                agreement_name,
+                agreement_plan,
                 data.get("notes"),
                 datetime.utcnow().isoformat(),
             ),
@@ -1797,6 +2312,23 @@ def create_app():
         params = []
         db = get_db()
 
+        existing = db.execute(
+            """
+            SELECT forma_atendimento, convenio_id, plano_convenio, status
+            FROM financeiro
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (financial_id,),
+        ).fetchone()
+        if existing is None:
+            abort(404, description="LanÃ§amento nÃ£o encontrado.")
+
+        next_care_type = existing["forma_atendimento"] if "forma_atendimento" in set(existing.keys()) else "particular"
+        next_agreement_id = existing["convenio_id"] if "convenio_id" in set(existing.keys()) else None
+        next_agreement_plan = existing["plano_convenio"] if "plano_convenio" in set(existing.keys()) else None
+        existing_status = str(existing["status"] or "").strip()
+
         for field, column in mapping.items():
             if field not in data:
                 continue
@@ -1810,6 +2342,31 @@ def create_app():
                 value = parse_float("amount", value)
             updates.append(f"{column} = ?")
             params.append(value)
+
+        if any(field in data for field in {"careType", "agreementId", "agreementPlan"}):
+            next_care_type, next_agreement_id, next_agreement_name, next_agreement_plan = resolve_agreement_for_care(
+                db,
+                data.get("careType") or next_care_type,
+                data.get("agreementId") if "agreementId" in data else next_agreement_id,
+                data.get("agreementPlan") if "agreementPlan" in data else next_agreement_plan,
+                require_active=True,
+            )
+            updates.extend(
+                [
+                    "forma_atendimento = ?",
+                    "convenio_id = ?",
+                    "convenio_nome = ?",
+                    "plano_convenio = ?",
+                ]
+            )
+            params.extend([next_care_type, next_agreement_id, next_agreement_name, next_agreement_plan])
+            if next_care_type == "convenio":
+                updates.append("status = ?")
+                params.append("Convenio")
+            else:
+                status_candidate = str(data.get("status") or existing_status).strip()
+                if not status_candidate or status_candidate.lower() == "convenio":
+                    abort(400, description="status e obrigatorio para atendimento particular.")
 
         if not updates:
             abort(400, description="Nenhum campo valido para atualizacao.")
@@ -2278,6 +2835,12 @@ def create_app():
                 "path": "/professionals",
                 "keywords": ["equipe", "usuarios", "acesso"],
             },
+            {
+                "id": "agreements",
+                "name": "Convenios",
+                "path": "/agreements",
+                "keywords": ["convenio", "planos", "saude"],
+            },
         ]
 
         page_results = []
@@ -2443,7 +3006,7 @@ def create_app():
         db = get_db()
         rows = db.execute(
             """
-            SELECT id, nome, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, observacoes, created_at
+            SELECT id, nome, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, forma_atendimento, convenio_nome, plano_convenio, observacoes, created_at, updated_at
             FROM pacientes
             ORDER BY nome
             """
@@ -2463,8 +3026,12 @@ def create_app():
                 "numero",
                 "bairro",
                 "cidade",
+                "forma_atendimento",
+                "convenio_nome",
+                "plano_convenio",
                 "observacoes",
                 "created_at",
+                "updated_at",
             ],
         )
         return dataframe_to_excel_response(df, "Pacientes", "pacientes.xlsx")
@@ -2484,6 +3051,9 @@ def create_app():
                 a.status,
                 a.motivo,
                 COALESCE(pr.name, a.profissional) AS profissional,
+                a.forma_atendimento,
+                a.convenio_nome,
+                a.plano_convenio,
                 a.observacoes,
                 a.created_at
             FROM agenda a
@@ -2504,6 +3074,9 @@ def create_app():
                 "status",
                 "motivo",
                 "profissional",
+                "forma_atendimento",
+                "convenio_nome",
+                "plano_convenio",
                 "observacoes",
                 "created_at",
             ],
@@ -2526,6 +3099,9 @@ def create_app():
                 f.valor,
                 f.status,
                 f.metodo_pagamento,
+                f.forma_atendimento,
+                f.convenio_nome,
+                f.plano_convenio,
                 f.observacoes,
                 f.created_at
             FROM financeiro f
@@ -2543,6 +3119,9 @@ def create_app():
                 "valor",
                 "status",
                 "metodo_pagamento",
+                "forma_atendimento",
+                "convenio_nome",
+                "plano_convenio",
                 "observacoes",
                 "created_at",
             ],
@@ -2561,7 +3140,8 @@ def create_app():
             SELECT
                 a.*,
                 p.nome,
-                pr.name AS professional_name
+                pr.name AS professional_name,
+                pr.specialty AS professional_specialty
             FROM agenda a
             LEFT JOIN pacientes p ON a.paciente_id = p.id
             LEFT JOIN professionals pr ON a.professional_id = pr.id
@@ -2679,5 +3259,8 @@ if __name__ == "__main__":
     app.run(debug=True)
 
     
+
+
+
 
 

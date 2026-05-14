@@ -3,6 +3,7 @@ from datetime import datetime
 from flask import Blueprint, current_app, g, jsonify, request, send_file
 
 from backend.services.report_service import (
+    generate_financial_excel,
     PatientNotFoundError,
     generate_financial_pdf,
     generate_patient_excel,
@@ -127,4 +128,31 @@ def get_financial_pdf_report(patient_id: str):
         as_attachment=True,
         download_name=filename,
         mimetype="application/pdf",
+    )
+
+
+@reports_bp.get("/financial/patient/<patient_id>/excel")
+def get_financial_excel_report(patient_id: str):
+    permission_error = _require_admin_user()
+    if permission_error is not None:
+        return permission_error
+
+    try:
+        start_date, end_date = _parse_date_range()
+        report_stream, filename = generate_financial_excel(patient_id, start_date, end_date)
+    except ValueError as exc:
+        return _error_response(400, "INVALID_DATE_RANGE", str(exc))
+    except PatientNotFoundError as exc:
+        return _error_response(404, "PATIENT_NOT_FOUND", str(exc))
+    except Exception:
+        current_app.logger.exception(
+            "Failed to generate financial Excel report for patient=%s", patient_id
+        )
+        return _error_response(500, "REPORT_GENERATION_ERROR", "Erro ao gerar relatorio financeiro.")
+
+    return send_file(
+        report_stream,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )

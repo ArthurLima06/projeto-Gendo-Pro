@@ -134,7 +134,7 @@ const Index = () => {
                         </span>
                         <div>
                           <p className="text-sm font-medium">{apt.patient}</p>
-                          <p className="text-xs text-muted-foreground">{apt.professional}</p>
+                          <p className="text-xs text-muted-foreground">{apt.professionalDisplay || apt.professional}</p>
                         </div>
                       </div>
                       <span

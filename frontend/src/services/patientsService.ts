@@ -13,6 +13,10 @@ export interface Patient {
   number?: string;
   district?: string;
   city?: string;
+  careType: "particular" | "convenio";
+  agreementId?: string | null;
+  agreementName?: string | null;
+  agreementPlan?: string | null;
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -30,6 +34,9 @@ export interface CreatePatientPayload {
   number?: string;
   district?: string;
   city?: string;
+  careType: "particular" | "convenio";
+  agreementId?: string;
+  agreementPlan?: string;
   notes?: string;
 }
 

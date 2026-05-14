@@ -5,6 +5,7 @@ export type ProfessionalRole = "admin" | "common";
 export interface Professional {
   id: string;
   name: string;
+  specialty?: string | null;
   email: string;
   phone?: string | null;
   role: ProfessionalRole;
@@ -17,6 +18,7 @@ export interface Professional {
 
 export interface CreateProfessionalPayload {
   name: string;
+  specialty: string;
   email: string;
   password: string;
   phone?: string;
@@ -25,6 +27,7 @@ export interface CreateProfessionalPayload {
 
 export interface UpdateProfessionalPayload {
   name?: string;
+  specialty?: string;
   email?: string;
   password?: string;
   phone?: string;
@@ -55,4 +58,9 @@ export async function deleteProfessional(
   id: string
 ): Promise<ApiResponse<{ id: string; deleted: boolean }>> {
   return api.delete<{ id: string; deleted: boolean }>(`/professionals/${id}`);
+}
+
+export function formatProfessionalDisplayName(professional: Pick<Professional, "name" | "specialty">): string {
+  const specialty = (professional.specialty || "").trim();
+  return specialty ? `${professional.name} - ${specialty}` : professional.name;
 }

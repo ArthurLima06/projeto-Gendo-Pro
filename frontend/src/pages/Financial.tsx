@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { DollarSign, FileText, Loader2 } from "lucide-react";
+import { DollarSign, Download, FileText, Loader2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { StatusBadge } from "@/components/StatusBadge";
 import { TableSkeleton } from "@/components/TableSkeleton";
@@ -13,12 +14,14 @@ import { EmptyState } from "@/components/EmptyState";
 import { toast } from "@/hooks/use-toast";
 import {
   createFinancialRecord,
+  generateFinancialExcelReport,
   generateFinancialPdfReport,
   getFinancialRecords,
   updateFinancialRecord,
   type FinancialRecord,
 } from "@/services/financialService";
 import { getPatients, type Patient } from "@/services/patientsService";
+import { getAgreements, type Agreement } from "@/services/agreementsService";
 import {
   Dialog,
   DialogContent,
@@ -37,12 +40,16 @@ const Financial = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [payments, setPayments] = useState<FinancialRecord[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [agreements, setAgreements] = useState<Agreement[]>([]);
   const [loadError, setLoadError] = useState("");
 
   const [formPatient, setFormPatient] = useState("");
   const [formDate, setFormDate] = useState("");
   const [formAmount, setFormAmount] = useState("");
+  const [formCareType, setFormCareType] = useState<"particular" | "convenio">("particular");
   const [formStatus, setFormStatus] = useState("");
+  const [formAgreementId, setFormAgreementId] = useState("");
+  const [formAgreementPlan, setFormAgreementPlan] = useState("");
   const [formMethod, setFormMethod] = useState("");
   const [formNotes, setFormNotes] = useState("");
 
@@ -50,12 +57,16 @@ const Financial = () => {
   const [reportStartDate, setReportStartDate] = useState("");
   const [reportEndDate, setReportEndDate] = useState("");
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [isExportingReport, setIsExportingReport] = useState(false);
 
   const [editingPayment, setEditingPayment] = useState<FinancialRecord | null>(null);
   const [editPatient, setEditPatient] = useState("");
   const [editDate, setEditDate] = useState("");
   const [editAmount, setEditAmount] = useState("");
+  const [editCareType, setEditCareType] = useState<"particular" | "convenio">("particular");
   const [editStatus, setEditStatus] = useState("");
+  const [editAgreementId, setEditAgreementId] = useState("");
+  const [editAgreementPlan, setEditAgreementPlan] = useState("");
   const [editMethod, setEditMethod] = useState("");
   const [editNotes, setEditNotes] = useState("");
   const [isSavingEdit, setIsSavingEdit] = useState(false);
@@ -63,20 +74,34 @@ const Financial = () => {
   useEffect(() => {
     const load = async () => {
       setIsLoading(true);
-      const [finRes, patRes] = await Promise.all([getFinancialRecords(), getPatients()]);
+      const [finRes, patRes, agreementsRes] = await Promise.all([
+        getFinancialRecords(),
+        getPatients(),
+        getAgreements({ activeOnly: true }),
+      ]);
       if (finRes.success === false) setLoadError(finRes.error.message);
       else setPayments(finRes.data);
       if (patRes.success) setPatients(patRes.data);
+      if (agreementsRes.success) setAgreements(agreementsRes.data);
       setIsLoading(false);
     };
     void load();
   }, []);
 
+  const activeAgreements = agreements.filter((item) => item.status === "ativo");
+  const selectedCreateAgreement = activeAgreements.find((item) => item.id === formAgreementId);
+  const selectedCreatePlans = selectedCreateAgreement?.plans || [];
+  const selectedEditAgreement = activeAgreements.find((item) => item.id === editAgreementId);
+  const selectedEditPlans = selectedEditAgreement?.plans || [];
+
   const resetCreateForm = () => {
     setFormPatient("");
     setFormDate("");
     setFormAmount("");
+    setFormCareType("particular");
     setFormStatus("");
+    setFormAgreementId("");
+    setFormAgreementPlan("");
     setFormMethod("");
     setFormNotes("");
   };
@@ -85,7 +110,7 @@ const Financial = () => {
     if (!reportPatientId || !reportStartDate || !reportEndDate) {
       toast({
         title: "Filtros obrigatorios",
-        description: "Selecione paciente, data inicial e data final para gerar o PDF.",
+        description: "Selecione paciente, data inicial e data final para gerar o relatorio.",
         variant: "destructive",
       });
       return false;
@@ -105,9 +130,23 @@ const Financial = () => {
     event.preventDefault();
     if (!isAdmin) return;
 
-    if (!formPatient || !formDate || !formAmount || !formStatus) {
+    if (!formPatient || !formDate || !formAmount) {
       toast({ title: "Erro", description: "Preencha todos os campos obrigatorios.", variant: "destructive" });
       return;
+    }
+    if (formCareType === "particular" && !formStatus) {
+      toast({ title: "Erro", description: "Selecione o status para atendimento particular.", variant: "destructive" });
+      return;
+    }
+    if (formCareType === "convenio") {
+      if (activeAgreements.length === 0) {
+        toast({ title: "Nenhum convenio disponivel no momento.", variant: "destructive" });
+        return;
+      }
+      if (!formAgreementId || !formAgreementPlan) {
+        toast({ title: "Erro", description: "Selecione convenio e plano para atendimento por convenio.", variant: "destructive" });
+        return;
+      }
     }
 
     setIsRegistering(true);
@@ -116,8 +155,11 @@ const Financial = () => {
         patient: formPatient,
         date: formDate,
         amount: formAmount,
-        status: formStatus,
-        method: formMethod,
+        careType: formCareType,
+        status: formCareType === "particular" ? formStatus : undefined,
+        agreementId: formCareType === "convenio" ? formAgreementId : undefined,
+        agreementPlan: formCareType === "convenio" ? formAgreementPlan : undefined,
+        method: formCareType === "particular" ? formMethod : undefined,
         notes: formNotes,
       });
       if (res.success === false) {
@@ -156,13 +198,38 @@ const Financial = () => {
     }
   };
 
+  const handleExportFinancialExcel = async () => {
+    if (!isAdmin || !hasValidReportRange()) return;
+
+    setIsExportingReport(true);
+    try {
+      await generateFinancialExcelReport({
+        patientId: reportPatientId,
+        startDate: reportStartDate,
+        endDate: reportEndDate,
+      });
+      toast({
+        title: "Relatorio financeiro exportado",
+        description: "O arquivo Excel financeiro foi gerado com sucesso.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao gerar relatorio financeiro.";
+      toast({ title: "Erro ao exportar Excel", description: message, variant: "destructive" });
+    } finally {
+      setIsExportingReport(false);
+    }
+  };
+
   const openEditDialog = (payment: FinancialRecord) => {
     if (!isAdmin) return;
     setEditingPayment(payment);
     setEditPatient(payment.patient);
     setEditDate(payment.date);
     setEditAmount(payment.amount.replace(",", ".").replace("R$", "").trim());
+    setEditCareType(payment.careType || "particular");
     setEditStatus(payment.status);
+    setEditAgreementId(payment.agreementId || "");
+    setEditAgreementPlan(payment.agreementPlan || "");
     setEditMethod(payment.method || "");
     setEditNotes(payment.notes || "");
   };
@@ -170,10 +237,26 @@ const Financial = () => {
   const handleSaveEdit = async () => {
     if (!editingPayment || !isAdmin) return;
 
-    if (!editPatient || !editDate || !editAmount || !editStatus) {
+    if (!editPatient || !editDate || !editAmount) {
       toast({
         title: "Campos obrigatorios",
-        description: "Preencha paciente, data, valor e status.",
+        description: "Preencha paciente, data e valor.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (editCareType === "particular" && !editStatus) {
+      toast({
+        title: "Campos obrigatorios",
+        description: "Selecione o status para atendimento particular.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (editCareType === "convenio" && (!editAgreementId || !editAgreementPlan)) {
+      toast({
+        title: "Campos obrigatorios",
+        description: "Selecione convenio e plano para atendimento por convenio.",
         variant: "destructive",
       });
       return;
@@ -184,8 +267,11 @@ const Financial = () => {
       patient: editPatient,
       date: editDate,
       amount: editAmount,
-      status: editStatus,
-      method: editMethod,
+      careType: editCareType,
+      status: editCareType === "particular" ? editStatus : undefined,
+      agreementId: editCareType === "convenio" ? editAgreementId : undefined,
+      agreementPlan: editCareType === "convenio" ? editAgreementPlan : undefined,
+      method: editCareType === "particular" ? editMethod : undefined,
       notes: editNotes,
     });
     setIsSavingEdit(false);
@@ -238,22 +324,91 @@ const Financial = () => {
                   <Input type="number" placeholder="0,00" step="0.01" value={formAmount} onChange={(event) => setFormAmount(event.target.value)} />
                 </div>
                 <div className="space-y-2">
-                  <Label>Status do Pagamento</Label>
-                  <Select value={formStatus} onValueChange={setFormStatus}>
+                  <Label>Forma de atendimento</Label>
+                  <Select
+                    value={formCareType}
+                    onValueChange={(value) => {
+                      const next = value as "particular" | "convenio";
+                      setFormCareType(next);
+                      if (next === "particular") {
+                        setFormAgreementId("");
+                        setFormAgreementPlan("");
+                      } else {
+                        setFormStatus("");
+                        setFormMethod("");
+                      }
+                    }}
+                  >
                     <SelectTrigger>
-                      <SelectValue placeholder="Selecionar status" />
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Pendente">Pendente</SelectItem>
-                      <SelectItem value="Pago">Pago</SelectItem>
-                      <SelectItem value="Atrasado">Atrasado</SelectItem>
+                      <SelectItem value="particular">Particular</SelectItem>
+                      <SelectItem value="convenio" disabled={activeAgreements.length === 0}>Convenio</SelectItem>
                     </SelectContent>
                   </Select>
+                  {activeAgreements.length === 0 && (
+                    <p className="text-xs text-muted-foreground">Nenhum convenio disponivel no momento.</p>
+                  )}
                 </div>
                 <div className="space-y-2">
-                  <Label>Metodo de pagamento</Label>
-                  <Input value={formMethod} onChange={(event) => setFormMethod(event.target.value)} placeholder="Pix, cartao, dinheiro..." />
+                  <Label>Status do Pagamento</Label>
+                  {formCareType === "particular" ? (
+                    <Select value={formStatus} onValueChange={setFormStatus}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecionar status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Pendente">Pendente</SelectItem>
+                        <SelectItem value="Pago">Pago</SelectItem>
+                        <SelectItem value="Atrasado">Atrasado</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <div className="h-10 rounded-md border border-border px-3 text-sm flex items-center text-muted-foreground">
+                      Status automatico: Convenio
+                    </div>
+                  )}
                 </div>
+                {formCareType === "convenio" ? (
+                  <>
+                    <div className="space-y-2">
+                      <Label>Convenio</Label>
+                      <Select value={formAgreementId} onValueChange={(value) => { setFormAgreementId(value); setFormAgreementPlan(""); }}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Selecionar convenio" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {activeAgreements.map((agreement) => (
+                            <SelectItem key={agreement.id} value={agreement.id}>
+                              {agreement.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Plano</Label>
+                      <Select value={formAgreementPlan} onValueChange={setFormAgreementPlan} disabled={!selectedCreateAgreement}>
+                        <SelectTrigger>
+                          <SelectValue placeholder={selectedCreateAgreement ? "Selecionar plano" : "Selecione um convenio"} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {selectedCreatePlans.map((plan) => (
+                            <SelectItem key={plan} value={plan}>
+                              {plan}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </>
+                ) : (
+                  <div className="space-y-2">
+                    <Label>Metodo de pagamento</Label>
+                    <Input value={formMethod} onChange={(event) => setFormMethod(event.target.value)} placeholder="Pix, cartao, dinheiro..." />
+                  </div>
+                )}
                 <div className="space-y-2 md:col-span-2">
                   <Label>Observacoes</Label>
                   <Textarea value={formNotes} onChange={(event) => setFormNotes(event.target.value)} rows={3} placeholder="Detalhes do pagamento..." />
@@ -315,19 +470,39 @@ const Financial = () => {
                 <Input type="date" value={reportEndDate} onChange={(event) => setReportEndDate(event.target.value)} />
               </div>
             </div>
-            <Button onClick={handleGenerateFinancialPdf} disabled={isGeneratingReport} className="w-full md:w-auto">
-              {isGeneratingReport ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Gerando...
-                </>
-              ) : (
-                <>
-                  <FileText className="h-4 w-4 mr-2" />
-                  Gerar PDF Financeiro
-                </>
-              )}
-            </Button>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <Button onClick={handleGenerateFinancialPdf} disabled={isGeneratingReport} className="w-full sm:w-auto">
+                {isGeneratingReport ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Gerando...
+                  </>
+                ) : (
+                  <>
+                    <FileText className="h-4 w-4 mr-2" />
+                    Gerar PDF Financeiro
+                  </>
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleExportFinancialExcel}
+                disabled={isExportingReport}
+                className="w-full sm:w-auto"
+              >
+                {isExportingReport ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Exportando...
+                  </>
+                ) : (
+                  <>
+                    <Download className="h-4 w-4 mr-2" />
+                    Exportar para Excel
+                  </>
+                )}
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -339,9 +514,9 @@ const Financial = () => {
         <CardContent className="p-0">
           {isLoading ? (
             <TableSkeleton
-              columns={isAdmin ? 6 : 5}
+              columns={isAdmin ? 7 : 6}
               rows={5}
-              headers={isAdmin ? ["Paciente", "Data", "Valor", "Status", "Registrado Em", "Acoes"] : ["Paciente", "Data", "Valor", "Status", "Registrado Em"]}
+              headers={isAdmin ? ["Paciente", "Data", "Valor", "Status", "Atendimento", "Registrado Em", "Acoes"] : ["Paciente", "Data", "Valor", "Status", "Atendimento", "Registrado Em"]}
             />
           ) : loadError ? (
             <EmptyState icon={DollarSign} title="Erro ao carregar dados" description={loadError} />
@@ -355,6 +530,7 @@ const Financial = () => {
                   <TableHead className="text-xs uppercase tracking-wider font-medium">Data</TableHead>
                   <TableHead className="text-xs uppercase tracking-wider font-medium">Valor</TableHead>
                   <TableHead className="text-xs uppercase tracking-wider font-medium">Status</TableHead>
+                  <TableHead className="text-xs uppercase tracking-wider font-medium">Atendimento</TableHead>
                   <TableHead className="text-xs uppercase tracking-wider font-medium">Registrado Em</TableHead>
                   {isAdmin && <TableHead className="text-xs uppercase tracking-wider font-medium text-right">Acoes</TableHead>}
                 </TableRow>
@@ -366,7 +542,16 @@ const Financial = () => {
                     <TableCell className="tabular-nums text-muted-foreground">{payment.date}</TableCell>
                     <TableCell className="font-semibold tabular-nums">{payment.amount}</TableCell>
                     <TableCell>
-                      <StatusBadge status={payment.status} />
+                      {payment.careType === "convenio" ? (
+                        <Badge className="bg-primary/10 text-primary border-primary/30">Convenio</Badge>
+                      ) : (
+                        <StatusBadge status={payment.status} />
+                      )}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      {payment.careType === "convenio"
+                        ? `${payment.agreementName || "Convenio"}${payment.agreementPlan ? ` - ${payment.agreementPlan}` : ""}`
+                        : "Particular"}
                     </TableCell>
                     <TableCell className="text-muted-foreground text-sm">{payment.registeredAt}</TableCell>
                     {isAdmin && (
@@ -417,22 +602,89 @@ const Financial = () => {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>Status</Label>
-              <Select value={editStatus} onValueChange={setEditStatus}>
+              <Label>Forma de atendimento</Label>
+              <Select
+                value={editCareType}
+                onValueChange={(value) => {
+                  const next = value as "particular" | "convenio";
+                  setEditCareType(next);
+                  if (next === "particular") {
+                    setEditAgreementId("");
+                    setEditAgreementPlan("");
+                  } else {
+                    setEditMethod("");
+                    setEditStatus("");
+                  }
+                }}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Pendente">Pendente</SelectItem>
-                  <SelectItem value="Pago">Pago</SelectItem>
-                  <SelectItem value="Atrasado">Atrasado</SelectItem>
+                  <SelectItem value="particular">Particular</SelectItem>
+                  <SelectItem value="convenio" disabled={activeAgreements.length === 0}>Convenio</SelectItem>
                 </SelectContent>
               </Select>
             </div>
+            {editCareType === "convenio" && (
+              <>
+                <div className="space-y-2">
+                  <Label>Convenio</Label>
+                  <Select value={editAgreementId} onValueChange={(value) => { setEditAgreementId(value); setEditAgreementPlan(""); }}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecionar convenio" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {activeAgreements.map((agreement) => (
+                        <SelectItem key={agreement.id} value={agreement.id}>
+                          {agreement.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Plano</Label>
+                  <Select value={editAgreementPlan} onValueChange={setEditAgreementPlan} disabled={!selectedEditAgreement}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={selectedEditAgreement ? "Selecionar plano" : "Selecione um convenio"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {selectedEditPlans.map((plan) => (
+                        <SelectItem key={plan} value={plan}>
+                          {plan}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
             <div className="space-y-2">
-              <Label>Metodo de pagamento</Label>
-              <Input value={editMethod} onChange={(event) => setEditMethod(event.target.value)} />
+              <Label>Status</Label>
+              {editCareType === "particular" ? (
+                <Select value={editStatus} onValueChange={setEditStatus}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Pendente">Pendente</SelectItem>
+                    <SelectItem value="Pago">Pago</SelectItem>
+                    <SelectItem value="Atrasado">Atrasado</SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="h-10 rounded-md border border-border px-3 text-sm flex items-center text-muted-foreground">
+                  Status automatico: Convenio
+                </div>
+              )}
             </div>
+            {editCareType === "particular" && (
+              <div className="space-y-2">
+                <Label>Metodo de pagamento</Label>
+                <Input value={editMethod} onChange={(event) => setEditMethod(event.target.value)} />
+              </div>
+            )}
             <div className="space-y-2">
               <Label>Observacoes</Label>
               <Textarea value={editNotes} onChange={(event) => setEditNotes(event.target.value)} rows={3} />

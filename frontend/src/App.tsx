@@ -16,6 +16,7 @@ import PatientList from "./pages/PatientList";
 import Reports from "./pages/Reports";
 import Financial from "./pages/Financial";
 import Professionals from "./pages/Professionals";
+import Agreements from "./pages/Agreements";
 import Register from "./pages/Register";
 import PaymentBlocked from "./pages/PaymentBlocked";
 import ResetPassword from "./pages/ResetPassword";
@@ -52,6 +53,7 @@ const App = () => (
                 <Route path="/reports" element={<Reports />} />
                 <Route path="/financial" element={<Financial />} />
                 <Route path="/professionals" element={<Professionals />} />
+                <Route path="/agreements" element={<Agreements />} />
               </Route>
             </Route>
             <Route path="*" element={<NotFound />} />

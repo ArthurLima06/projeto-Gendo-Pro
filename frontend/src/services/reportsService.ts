@@ -1,9 +1,12 @@
 const BASE_URL = "/api";
 
-export interface ReportDownloadParams {
-  patientId: string;
+export interface DateRangeReportParams {
   startDate: string;
   endDate: string;
+}
+
+export interface ReportDownloadParams extends DateRangeReportParams {
+  patientId: string;
 }
 
 interface ApiErrorPayload {
@@ -12,7 +15,7 @@ interface ApiErrorPayload {
   };
 }
 
-function buildReportUrl(path: string, params: ReportDownloadParams): string {
+function buildReportUrl(path: string, params: DateRangeReportParams): string {
   const query = new URLSearchParams({
     start_date: params.startDate,
     end_date: params.endDate,
@@ -50,10 +53,11 @@ async function parseErrorMessage(response: Response, fallback: string): Promise<
   return fallback;
 }
 
-async function downloadReport(
+export async function downloadReportFile(
   path: string,
-  params: ReportDownloadParams,
-  fallbackFilename: string
+  params: DateRangeReportParams,
+  fallbackFilename: string,
+  fallbackErrorMessage = "Erro ao gerar relatorio."
 ): Promise<void> {
   const token = sessionStorage.getItem("gendo_auth_token");
   const response = await fetch(buildReportUrl(path, params), {
@@ -62,7 +66,7 @@ async function downloadReport(
   });
 
   if (!response.ok) {
-    const message = await parseErrorMessage(response, "Erro ao gerar relatório.");
+    const message = await parseErrorMessage(response, fallbackErrorMessage);
     throw new Error(message);
   }
 
@@ -81,10 +85,18 @@ async function downloadReport(
 
 export async function generatePatientReport(params: ReportDownloadParams): Promise<void> {
   const fallbackFilename = `relatorio_paciente_${params.patientId}_${params.startDate}_${params.endDate}.pdf`;
-  return downloadReport(`/reports/patient/${encodeURIComponent(params.patientId)}/pdf`, params, fallbackFilename);
+  return downloadReportFile(
+    `/reports/patient/${encodeURIComponent(params.patientId)}/pdf`,
+    params,
+    fallbackFilename
+  );
 }
 
 export async function exportData(params: ReportDownloadParams): Promise<void> {
   const fallbackFilename = `relatorio_paciente_${params.patientId}_${params.startDate}_${params.endDate}.xlsx`;
-  return downloadReport(`/reports/patient/${encodeURIComponent(params.patientId)}/excel`, params, fallbackFilename);
+  return downloadReportFile(
+    `/reports/patient/${encodeURIComponent(params.patientId)}/excel`,
+    params,
+    fallbackFilename
+  );
 }

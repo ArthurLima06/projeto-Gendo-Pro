@@ -21,7 +21,8 @@ import {
 } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
 import type { Patient } from "@/services/patientsService";
-import type { Professional } from "@/services/professionalsService";
+import { formatProfessionalDisplayName, type Professional } from "@/services/professionalsService";
+import type { Agreement } from "@/services/agreementsService";
 import type { Appointment } from "@/stores/appointmentStore";
 
 interface EventModalSubmitPayload {
@@ -33,6 +34,9 @@ interface EventModalSubmitPayload {
   professional_id?: string;
   reason: string;
   notes: string;
+  careType: "particular" | "convenio";
+  agreementId?: string;
+  agreementPlan?: string;
   durationMinutes: number;
 }
 
@@ -42,6 +46,7 @@ interface EventModalProps {
   appointment: Appointment | null;
   patients: Patient[];
   professionals: Professional[];
+  agreements: Agreement[];
   initialDate?: string;
   initialTime?: string;
   initialDurationMinutes?: number;
@@ -62,6 +67,7 @@ const EventModal = ({
   appointment,
   patients,
   professionals,
+  agreements,
   initialDate,
   initialTime,
   initialDurationMinutes,
@@ -74,8 +80,23 @@ const EventModal = ({
   const [professionalId, setProfessionalId] = useState("");
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState("");
+  const [careType, setCareType] = useState<"particular" | "convenio">("particular");
+  const [agreementId, setAgreementId] = useState("");
+  const [agreementPlan, setAgreementPlan] = useState("");
   const [durationMinutes, setDurationMinutes] = useState(60);
   const [isSaving, setIsSaving] = useState(false);
+  const activeAgreements = useMemo(
+    () => agreements.filter((item) => item.status === "ativo"),
+    [agreements]
+  );
+  const selectedAgreement = useMemo(
+    () => activeAgreements.find((item) => item.id === agreementId),
+    [activeAgreements, agreementId]
+  );
+  const selectedPlans = useMemo(
+    () => selectedAgreement?.plans || [],
+    [selectedAgreement]
+  );
 
   const professionalOptions = useMemo(() => {
     const map = new Map(professionals.map((item) => [item.id, item]));
@@ -83,6 +104,7 @@ const EventModal = ({
       map.set(appointment.professionalId, {
         id: appointment.professionalId,
         name: appointment.professional,
+        specialty: appointment.professionalSpecialty,
         email: "",
         role: "common",
         createdAt: "",
@@ -102,10 +124,17 @@ const EventModal = ({
       setDate(appointment.date || "");
       setTime((appointment.time || "").slice(0, 5));
       const byId = professionalOptions.find((item) => item.id === appointment.professionalId);
-      const byName = professionalOptions.find((item) => item.name === appointment.professional);
+      const byName = professionalOptions.find(
+        (item) =>
+          item.name === appointment.professional ||
+          formatProfessionalDisplayName(item) === appointment.professionalDisplay
+      );
       setProfessionalId(byId?.id || byName?.id || "");
       setReason(appointment.reason || "");
       setNotes(appointment.notes || "");
+      setCareType(appointment.careType || "particular");
+      setAgreementId(appointment.agreementId || "");
+      setAgreementPlan(appointment.agreementPlan || "");
       setDurationMinutes(normalizeDuration(initialDurationMinutes));
       return;
     }
@@ -116,8 +145,22 @@ const EventModal = ({
     setProfessionalId("");
     setReason("");
     setNotes("");
+    setCareType("particular");
+    setAgreementId("");
+    setAgreementPlan("");
     setDurationMinutes(normalizeDuration(initialDurationMinutes));
   }, [open, mode, appointment, initialDate, initialTime, initialDurationMinutes, professionalOptions]);
+
+  useEffect(() => {
+    if (careType !== "convenio") {
+      if (agreementId) setAgreementId("");
+      if (agreementPlan) setAgreementPlan("");
+      return;
+    }
+    if (agreementPlan && !selectedPlans.includes(agreementPlan)) {
+      setAgreementPlan("");
+    }
+  }, [careType, agreementId, agreementPlan, selectedPlans]);
 
   const patientOptions = useMemo(() => {
     const names = new Set(patients.map((item) => item.name));
@@ -138,6 +181,23 @@ const EventModal = ({
       });
       return;
     }
+    if (careType === "convenio") {
+      if (activeAgreements.length === 0) {
+        toast({
+          title: "Nenhum convenio disponivel no momento.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!agreementId || !agreementPlan) {
+        toast({
+          title: "Campos obrigatorios",
+          description: "Selecione convenio e plano para atendimento por convenio.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
 
     const selectedPatient = patients.find((item) => item.name === patient);
     const selectedProfessional = professionalOptions.find((item) => item.id === professionalId);
@@ -153,6 +213,9 @@ const EventModal = ({
         professional_id: selectedProfessional?.id,
         reason,
         notes,
+        careType,
+        agreementId: careType === "convenio" ? agreementId : undefined,
+        agreementPlan: careType === "convenio" ? agreementPlan : undefined,
         durationMinutes: normalizeDuration(durationMinutes),
       });
     } finally {
@@ -220,12 +283,73 @@ const EventModal = ({
               <SelectContent>
                 {professionalOptions.map((item) => (
                   <SelectItem key={item.id} value={item.id}>
-                    {item.name}
+                    {formatProfessionalDisplayName(item)}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
+
+          <div className="space-y-2">
+            <Label>Forma de atendimento</Label>
+            <Select
+              value={careType}
+              onValueChange={(value) => {
+                const next = value as "particular" | "convenio";
+                setCareType(next);
+                if (next === "particular") {
+                  setAgreementId("");
+                  setAgreementPlan("");
+                }
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="particular">Particular</SelectItem>
+                <SelectItem value="convenio" disabled={activeAgreements.length === 0}>Convenio</SelectItem>
+              </SelectContent>
+            </Select>
+            {activeAgreements.length === 0 && (
+              <p className="text-xs text-muted-foreground">Nenhum convenio disponivel no momento.</p>
+            )}
+          </div>
+
+          {careType === "convenio" && (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Convenio</Label>
+                <Select value={agreementId} onValueChange={(value) => { setAgreementId(value); setAgreementPlan(""); }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecionar convenio" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {activeAgreements.map((item) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        {item.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Plano</Label>
+                <Select value={agreementPlan} onValueChange={setAgreementPlan} disabled={!selectedAgreement}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={selectedAgreement ? "Selecionar plano" : "Selecione um convenio"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {selectedPlans.map((plan) => (
+                      <SelectItem key={plan} value={plan}>
+                        {plan}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label>Motivo</Label>

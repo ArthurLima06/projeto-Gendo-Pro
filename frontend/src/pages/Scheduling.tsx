@@ -11,7 +11,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useSimulatedLoading } from "@/hooks/useSimulatedLoading";
 import { toast } from "@/hooks/use-toast";
 import { getPatients, type Patient } from "@/services/patientsService";
-import { getProfessionals, type Professional } from "@/services/professionalsService";
+import {
+  formatProfessionalDisplayName,
+  getProfessionals,
+  type Professional,
+} from "@/services/professionalsService";
+import { getAgreements, type Agreement } from "@/services/agreementsService";
 import { useAppointmentStore, type Appointment } from "@/stores/appointmentStore";
 import CalendarGrid from "@/components/scheduling/calendar/CalendarGrid";
 import EventModal, { type EventModalSubmitPayload } from "@/components/scheduling/calendar/EventModal";
@@ -56,6 +61,7 @@ interface ResizeState {
 const Scheduling = () => {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [professionals, setProfessionals] = useState<Professional[]>([]);
+  const [agreements, setAgreements] = useState<Agreement[]>([]);
   const [searchParams] = useSearchParams();
   const focusDateParam = searchParams.get("date");
   const isLoading = useSimulatedLoading(900);
@@ -75,6 +81,9 @@ const Scheduling = () => {
   const [formProfessional, setFormProfessional] = useState("");
   const [formReason, setFormReason] = useState("");
   const [formNotes, setFormNotes] = useState("");
+  const [formCareType, setFormCareType] = useState<"particular" | "convenio">("particular");
+  const [formAgreementId, setFormAgreementId] = useState("");
+  const [formAgreementPlan, setFormAgreementPlan] = useState("");
   const [isScheduling, setIsScheduling] = useState(false);
 
   const [durationById, setDurationById] = useState<Record<string, number>>({});
@@ -112,8 +121,15 @@ const Scheduling = () => {
         );
       }
     };
+    const loadAgreements = async () => {
+      const response = await getAgreements({ activeOnly: true });
+      if (response.success) {
+        setAgreements(response.data);
+      }
+    };
     loadPatients();
     loadProfessionals();
+    loadAgreements();
   }, [fetchAppointments]);
 
   useEffect(() => {
@@ -196,6 +212,13 @@ const Scheduling = () => {
   const professionalOptions = useMemo(() => {
     return [...professionals].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
   }, [professionals]);
+
+  const activeAgreements = useMemo(
+    () => agreements.filter((item) => item.status === "ativo"),
+    [agreements]
+  );
+  const selectedSidebarAgreement = activeAgreements.find((item) => item.id === formAgreementId);
+  const selectedSidebarPlans = selectedSidebarAgreement?.plans || [];
 
   const appointmentsByDate = useMemo(() => {
     const grouped: Record<string, AppointmentRenderData[]> = {};
@@ -282,6 +305,23 @@ const Scheduling = () => {
       });
       return;
     }
+    if (formCareType === "convenio") {
+      if (activeAgreements.length === 0) {
+        toast({
+          title: "Nenhum convenio disponivel no momento.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (!formAgreementId || !formAgreementPlan) {
+        toast({
+          title: "Campos obrigatorios",
+          description: "Selecione convenio e plano para atendimento por convenio.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
 
     setIsScheduling(true);
     try {
@@ -294,6 +334,9 @@ const Scheduling = () => {
         professional_id: selectedProfessional?.id,
         reason: formReason,
         notes: formNotes,
+        careType: formCareType,
+        agreementId: formCareType === "convenio" ? formAgreementId : undefined,
+        agreementPlan: formCareType === "convenio" ? formAgreementPlan : undefined,
         duration: clampDuration(formDuration),
       });
 
@@ -312,6 +355,9 @@ const Scheduling = () => {
       setFormProfessional("");
       setFormReason("");
       setFormNotes("");
+      setFormCareType("particular");
+      setFormAgreementId("");
+      setFormAgreementPlan("");
       toast({
         title: "Consulta agendada",
         description: "O agendamento foi criado com sucesso.",
@@ -336,6 +382,9 @@ const Scheduling = () => {
         professional_id: payload.professional_id,
         reason: payload.reason,
         notes: payload.notes,
+        careType: payload.careType,
+        agreementId: payload.agreementId,
+        agreementPlan: payload.agreementPlan,
         duration: payload.durationMinutes,
       });
 
@@ -372,6 +421,9 @@ const Scheduling = () => {
       professional_id: payload.professional_id,
       reason: payload.reason,
       notes: payload.notes,
+      careType: payload.careType,
+      agreementId: payload.agreementId,
+      agreementPlan: payload.agreementPlan,
       duration: payload.durationMinutes,
     });
 
@@ -617,12 +669,71 @@ const Scheduling = () => {
                   <SelectContent>
                     {professionalOptions.map((professional) => (
                       <SelectItem key={professional.id} value={professional.id}>
-                        {professional.name}
+                        {formatProfessionalDisplayName(professional)}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
+              <div className="space-y-2">
+                <Label>Forma de atendimento</Label>
+                <Select
+                  value={formCareType}
+                  onValueChange={(value) => {
+                    const next = value as "particular" | "convenio";
+                    setFormCareType(next);
+                    if (next === "particular") {
+                      setFormAgreementId("");
+                      setFormAgreementPlan("");
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="particular">Particular</SelectItem>
+                    <SelectItem value="convenio" disabled={activeAgreements.length === 0}>Convenio</SelectItem>
+                  </SelectContent>
+                </Select>
+                {activeAgreements.length === 0 && (
+                  <p className="text-xs text-muted-foreground">Nenhum convenio disponivel no momento.</p>
+                )}
+              </div>
+              {formCareType === "convenio" && (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Convenio</Label>
+                    <Select value={formAgreementId} onValueChange={(value) => { setFormAgreementId(value); setFormAgreementPlan(""); }}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecionar convenio" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {activeAgreements.map((agreement) => (
+                          <SelectItem key={agreement.id} value={agreement.id}>
+                            {agreement.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Plano</Label>
+                    <Select value={formAgreementPlan} onValueChange={setFormAgreementPlan} disabled={!selectedSidebarAgreement}>
+                      <SelectTrigger>
+                        <SelectValue placeholder={selectedSidebarAgreement ? "Selecionar plano" : "Selecione um convenio"} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {selectedSidebarPlans.map((plan) => (
+                          <SelectItem key={plan} value={plan}>
+                            {plan}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label>Motivo</Label>
                 <Input
@@ -735,6 +846,7 @@ const Scheduling = () => {
         appointment={editingAppointment}
         patients={patients}
         professionals={professionalOptions}
+        agreements={activeAgreements}
         initialDate={modalSeed.date}
         initialTime={modalSeed.time}
         initialDurationMinutes={modalSeed.durationMinutes}
@@ -766,4 +878,3 @@ const Scheduling = () => {
 };
 
 export default Scheduling;
-

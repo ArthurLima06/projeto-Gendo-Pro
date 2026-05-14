@@ -15,6 +15,7 @@ const pageTitles: Record<string, string> = {
   "/reports": "Relatorios",
   "/financial": "Financeiro",
   "/professionals": "Profissionais",
+  "/agreements": "Convenios",
 };
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {

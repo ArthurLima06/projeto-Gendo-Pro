@@ -35,7 +35,7 @@ def _fetch_patient(patient_id: str) -> dict[str, Any]:
     db = get_db()
     patient_row = db.execute(
         """
-        SELECT id, nome, idade, escola, responsavel, telefone, email
+        SELECT id, nome, idade, escola, responsavel, telefone, email, forma_atendimento, convenio_nome, plano_convenio
         FROM pacientes
         WHERE id = ?
         """,
@@ -65,7 +65,7 @@ def _fetch_appointments(patient_id: str, start_date: str, end_date: str) -> list
     db = get_db()
     rows = db.execute(
         """
-        SELECT id, data, horario, status, motivo, profissional, observacoes
+        SELECT id, data, horario, status, motivo, profissional, observacoes, forma_atendimento, convenio_nome, plano_convenio
         FROM agenda
         WHERE paciente_id = ?
           AND date(data) BETWEEN date(?) AND date(?)
@@ -95,7 +95,7 @@ def _fetch_financial_entries(patient_id: str, start_date: str, end_date: str) ->
     db = get_db()
     rows = db.execute(
         """
-        SELECT id, data, valor, status, metodo_pagamento, observacoes
+        SELECT id, data, valor, status, metodo_pagamento, observacoes, forma_atendimento, convenio_nome, plano_convenio
         FROM financeiro
         WHERE paciente_id = ?
           AND date(data) BETWEEN date(?) AND date(?)
@@ -185,6 +185,11 @@ def generate_patient_pdf(patient_id: str, start_date: str, end_date: str) -> tup
     line(f"Responsável: {_safe_value(patient.get('responsavel'))}")
     line(f"Telefone: {_safe_value(patient.get('telefone'))}")
     line(f"Email: {_safe_value(patient.get('email'))}")
+    patient_care_type = str(patient.get("forma_atendimento") or "particular").strip().lower()
+    line(f"Tipo de Atendimento: {'Convenio' if patient_care_type == 'convenio' else 'Particular'}")
+    if patient_care_type == "convenio":
+        line(f"Convenio: {_safe_value(patient.get('convenio_nome'))}")
+        line(f"Plano: {_safe_value(patient.get('plano_convenio'))}")
     y -= 6
 
     section_title("Período do Relatório")
@@ -215,6 +220,11 @@ def generate_patient_pdf(patient_id: str, start_date: str, end_date: str) -> tup
                 )
                 line(f"  Motivo: {_safe_value(appointment.get('motivo'))}", indent=10)
                 line(f"  Profissional: {_safe_value(appointment.get('profissional'))}", indent=10)
+                appointment_care_type = str(appointment.get("forma_atendimento") or "particular").strip().lower()
+                line(f"  Tipo: {'Convenio' if appointment_care_type == 'convenio' else 'Particular'}", indent=10)
+                if appointment_care_type == "convenio":
+                    line(f"  Convenio: {_safe_value(appointment.get('convenio_nome'))}", indent=10)
+                    line(f"  Plano: {_safe_value(appointment.get('plano_convenio'))}", indent=10)
                 line(f"  Observações: {_safe_value(appointment.get('observacoes'))}", indent=10)
                 y -= 4
 
@@ -260,6 +270,11 @@ def generate_patient_excel(patient_id: str, start_date: str, end_date: str) -> t
                 "Responsável": _safe_value(patient.get("responsavel")),
                 "Telefone": _safe_value(patient.get("telefone")),
                 "Email": _safe_value(patient.get("email")),
+                "Tipo de Atendimento": "Convenio"
+                if str(patient.get("forma_atendimento") or "particular").strip().lower() == "convenio"
+                else "Particular",
+                "Convenio": _safe_value(patient.get("convenio_nome")),
+                "Plano Convenio": _safe_value(patient.get("plano_convenio")),
                 "Data Inicial": start_date,
                 "Data Final": end_date,
             }
@@ -276,6 +291,9 @@ def generate_patient_excel(patient_id: str, start_date: str, end_date: str) -> t
                 "Atividade/Motivo": _safe_value(session.get("atividade")),
                 "Profissional": "",
                 "Status": "",
+                "Tipo Atendimento": "",
+                "Convenio": "",
+                "Plano Convenio": "",
                 "Detalhes": _safe_value(session.get("evolucao")),
                 "Observações": _safe_value(session.get("observacoes")),
             }
@@ -289,6 +307,11 @@ def generate_patient_excel(patient_id: str, start_date: str, end_date: str) -> t
                 "Atividade/Motivo": _safe_value(appointment.get("motivo")),
                 "Profissional": _safe_value(appointment.get("profissional")),
                 "Status": _safe_value(appointment.get("status")),
+                "Tipo Atendimento": "Convenio"
+                if str(appointment.get("forma_atendimento") or "particular").strip().lower() == "convenio"
+                else "Particular",
+                "Convenio": _safe_value(appointment.get("convenio_nome")),
+                "Plano Convenio": _safe_value(appointment.get("plano_convenio")),
                 "Detalhes": "",
                 "Observações": _safe_value(appointment.get("observacoes")),
             }
@@ -341,12 +364,18 @@ def generate_financial_pdf(patient_id: str, start_date: str, end_date: str) -> t
     )
 
     total_amount = sum(float(entry.get("valor") or 0) for entry in entries)
+    particular_entries = [
+        entry for entry in entries if str(entry.get("forma_atendimento") or "particular").strip().lower() != "convenio"
+    ]
+    convenio_entries = [
+        entry for entry in entries if str(entry.get("forma_atendimento") or "particular").strip().lower() == "convenio"
+    ]
     paid_amount = sum(
         float(entry.get("valor") or 0)
-        for entry in entries
+        for entry in particular_entries
         if str(entry.get("status") or "").strip().lower() == "pago"
     )
-    pending_amount = max(total_amount - paid_amount, 0)
+    pending_amount = max(sum(float(entry.get("valor") or 0) for entry in particular_entries) - paid_amount, 0)
 
     status_totals: dict[str, int] = {}
     for entry in entries:
@@ -392,6 +421,8 @@ def generate_financial_pdf(patient_id: str, start_date: str, end_date: str) -> t
     section_title("Resumo Financeiro")
     line(f"Total de lancamentos: {len(entries)}")
     line(f"Valor total: R$ {total_amount:.2f}")
+    line(f"Lancamentos Particular: {len(particular_entries)}")
+    line(f"Lancamentos Convenio: {len(convenio_entries)}")
     line(f"Valor pago: R$ {paid_amount:.2f}")
     line(f"Pendencias: R$ {pending_amount:.2f}")
     if status_totals:
@@ -406,12 +437,19 @@ def generate_financial_pdf(patient_id: str, start_date: str, end_date: str) -> t
         line("Nenhum pagamento encontrado no periodo selecionado.")
     else:
         for entry in entries:
-            line(
-                f"- {entry.get('data')} | {_safe_value(entry.get('status'))} | R$ {float(entry.get('valor') or 0):.2f}",
-                indent=10,
-            )
-            if entry.get("metodo_pagamento"):
-                line(f"  Metodo: {_safe_value(entry.get('metodo_pagamento'))}", indent=10)
+            entry_care_type = str(entry.get("forma_atendimento") or "particular").strip().lower()
+            if entry_care_type == "convenio":
+                line(f"- {entry.get('data')} | R$ {float(entry.get('valor') or 0):.2f}", indent=10)
+                line("  Tipo: Convenio", indent=10)
+                line(f"  Convenio: {_safe_value(entry.get('convenio_nome'))}", indent=10)
+                line(f"  Plano: {_safe_value(entry.get('plano_convenio'))}", indent=10)
+            else:
+                line(
+                    f"- {entry.get('data')} | {_safe_value(entry.get('status'))} | R$ {float(entry.get('valor') or 0):.2f}",
+                    indent=10,
+                )
+                if entry.get("metodo_pagamento"):
+                    line(f"  Metodo: {_safe_value(entry.get('metodo_pagamento'))}", indent=10)
             if entry.get("observacoes"):
                 line(f"  Observacoes: {_safe_value(entry.get('observacoes'))}", indent=10)
             y -= 4
@@ -420,3 +458,47 @@ def generate_financial_pdf(patient_id: str, start_date: str, end_date: str) -> t
     buffer.seek(0)
     filename = f"relatorio_financeiro_{patient_id}_{start_date}_{end_date}.pdf"
     return buffer, filename
+
+
+def generate_financial_excel(patient_id: str, start_date: str, end_date: str) -> tuple[BytesIO, str]:
+    patient = _fetch_patient(patient_id)
+    entries = _fetch_financial_entries(patient_id, start_date, end_date)
+
+    logger.info(
+        "Generating financial Excel report for patient=%s period=%s..%s (entries=%s)",
+        patient_id,
+        start_date,
+        end_date,
+        len(entries),
+    )
+
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        care_type = str(entry.get("forma_atendimento") or "particular").strip().lower()
+        is_convenio = care_type == "convenio"
+        rows.append(
+            {
+                "Paciente": _safe_value(patient.get("nome")),
+                "Data": _safe_value(entry.get("data")),
+                "Valor": float(entry.get("valor") or 0),
+                "Forma de Atendimento": "Convenio" if is_convenio else "Particular",
+                "Convenio": _safe_value(entry.get("convenio_nome")) if is_convenio else "-",
+                "Plano": _safe_value(entry.get("plano_convenio")) if is_convenio else "-",
+                "Status Financeiro": "-" if is_convenio else _safe_value(entry.get("status")),
+            }
+        )
+
+    if rows:
+        financial_df = pd.DataFrame(rows).sort_values(by=["Data"], na_position="last")
+    else:
+        financial_df = pd.DataFrame(
+            [{"Mensagem": "Nenhum pagamento encontrado no periodo selecionado."}]
+        )
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        financial_df.to_excel(writer, index=False, sheet_name="Relatorio Financeiro")
+
+    output.seek(0)
+    filename = f"relatorio_financeiro_{patient_id}_{start_date}_{end_date}.xlsx"
+    return output, filename

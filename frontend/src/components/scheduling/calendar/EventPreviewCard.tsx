@@ -57,12 +57,28 @@ const EventPreviewCard = ({
       <div className="mt-3 space-y-2 text-xs">
         <div className="grid grid-cols-[88px_1fr] gap-2">
           <span className="text-muted-foreground">Profissional</span>
-          <span className="truncate">{appointment.professional || "Nao informado"}</span>
+          <span className="truncate">{appointment.professionalDisplay || appointment.professional || "Nao informado"}</span>
         </div>
         <div className="grid grid-cols-[88px_1fr] gap-2">
           <span className="text-muted-foreground">Motivo</span>
           <span className="truncate">{appointment.reason || "Nao informado"}</span>
         </div>
+        <div className="grid grid-cols-[88px_1fr] gap-2">
+          <span className="text-muted-foreground">Atendimento</span>
+          <span>{appointment.careType === "convenio" ? "Convenio" : "Particular"}</span>
+        </div>
+        {appointment.careType === "convenio" && (
+          <>
+            <div className="grid grid-cols-[88px_1fr] gap-2">
+              <span className="text-muted-foreground">Convenio</span>
+              <span className="truncate">{appointment.agreementName || "Nao informado"}</span>
+            </div>
+            <div className="grid grid-cols-[88px_1fr] gap-2">
+              <span className="text-muted-foreground">Plano</span>
+              <span className="truncate">{appointment.agreementPlan || "Nao informado"}</span>
+            </div>
+          </>
+        )}
         <div>
           <span className="text-muted-foreground">Observacoes</span>
           <p className="line-clamp-3 pt-1 leading-relaxed">{appointment.notes || "Nao informado"}</p>
@@ -84,4 +100,3 @@ const EventPreviewCard = ({
 };
 
 export default EventPreviewCard;
-

@@ -22,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Settings, LogOut, Sun, Moon, Camera, Lock, User, Users } from "lucide-react";
+import { Settings, LogOut, Sun, Moon, Camera, Lock, User, Users, Building2 } from "lucide-react";
 
 const UserProfileDropdown = () => {
   const navigate = useNavigate();
@@ -117,6 +117,11 @@ const UserProfileDropdown = () => {
           <DropdownMenuItem onClick={() => navigate("/professionals")} className="cursor-pointer">
             <Users className="mr-2 h-4 w-4" />
             Profissionais
+          </DropdownMenuItem>
+
+          <DropdownMenuItem onClick={() => navigate("/agreements")} className="cursor-pointer">
+            <Building2 className="mr-2 h-4 w-4" />
+            Convênios
           </DropdownMenuItem>
 
           <DropdownMenuItem onClick={toggleTheme} className="cursor-pointer">

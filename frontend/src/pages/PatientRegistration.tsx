@@ -6,6 +6,7 @@ import { Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
 import {
@@ -16,8 +17,11 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { createPatient } from "@/services/patientsService";
 import { formatCep, lookupCep, normalizeCep } from "@/services/cepService";
+import { getAgreements, type Agreement } from "@/services/agreementsService";
 
 const patientSchema = z
   .object({
@@ -38,6 +42,9 @@ const patientSchema = z
     address: z.string().optional(),
     district: z.string().optional(),
     city: z.string().optional(),
+    careType: z.enum(["particular", "convenio"], { required_error: "Selecione a forma de atendimento" }),
+    agreementId: z.string().optional(),
+    agreementPlan: z.string().optional(),
     notes: z.string().optional(),
   })
   .superRefine((data, ctx) => {
@@ -48,6 +55,22 @@ const patientSchema = z
         message: "Informe o responsavel",
         path: ["responsible"],
       });
+    }
+    if (data.careType === "convenio") {
+      if (!data.agreementId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Selecione o convenio",
+          path: ["agreementId"],
+        });
+      }
+      if (!data.agreementPlan) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Selecione o plano",
+          path: ["agreementPlan"],
+        });
+      }
     }
   });
 
@@ -60,6 +83,7 @@ const PatientRegistration = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [isLookingUpCep, setIsLookingUpCep] = useState(false);
   const [cepFeedback, setCepFeedback] = useState<CepFeedback>(null);
+  const [agreements, setAgreements] = useState<Agreement[]>([]);
   const lastLookupCepRef = useRef("");
 
   const form = useForm<PatientFormValues>({
@@ -76,6 +100,9 @@ const PatientRegistration = () => {
       address: "",
       district: "",
       city: "",
+      careType: "particular",
+      agreementId: "",
+      agreementPlan: "",
       notes: "",
     },
     mode: "onSubmit",
@@ -83,7 +110,36 @@ const PatientRegistration = () => {
 
   const ageValue = form.watch("age");
   const cepValue = form.watch("cep");
+  const careTypeValue = form.watch("careType");
+  const agreementIdValue = form.watch("agreementId");
   const isMinor = !isNaN(Number(ageValue)) && Number(ageValue) < 18 && ageValue !== "";
+  const activeAgreements = agreements.filter((item) => item.status === "ativo");
+  const selectedAgreement = activeAgreements.find((item) => item.id === agreementIdValue);
+  const selectedAgreementPlans = selectedAgreement?.plans || [];
+
+  useEffect(() => {
+    const loadAgreements = async () => {
+      const response = await getAgreements({ activeOnly: true });
+      if (response.success) {
+        setAgreements(response.data);
+      }
+    };
+    void loadAgreements();
+  }, []);
+
+  useEffect(() => {
+    if (careTypeValue !== "convenio") {
+      form.setValue("agreementId", "");
+      form.setValue("agreementPlan", "");
+    }
+  }, [careTypeValue, form]);
+
+  useEffect(() => {
+    const currentPlan = form.getValues("agreementPlan") || "";
+    if (currentPlan && !selectedAgreementPlans.includes(currentPlan)) {
+      form.setValue("agreementPlan", "");
+    }
+  }, [selectedAgreementPlans, form]);
 
   useEffect(() => {
     const normalizedCep = normalizeCep(cepValue || "");
@@ -120,6 +176,15 @@ const PatientRegistration = () => {
   }, [cepValue, form]);
 
   const onSubmit = async (data: PatientFormValues) => {
+    if (data.careType === "convenio" && activeAgreements.length === 0) {
+      toast({
+        title: "Nenhum convenio disponivel no momento.",
+        description: "Cadastre e ative ao menos um convenio para selecionar esta opcao.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsSaving(true);
     try {
       const res = await createPatient({
@@ -134,6 +199,9 @@ const PatientRegistration = () => {
         address: data.address,
         district: data.district,
         city: data.city,
+        careType: data.careType,
+        agreementId: data.careType === "convenio" ? data.agreementId : undefined,
+        agreementPlan: data.careType === "convenio" ? data.agreementPlan : undefined,
         notes: data.notes,
       });
       if (res.success === false) {
@@ -169,6 +237,92 @@ const PatientRegistration = () => {
           <Form {...form}>
             <form className="space-y-6" onSubmit={form.handleSubmit(onSubmit)}>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <FormField
+                  control={form.control}
+                  name="careType"
+                  render={({ field }) => (
+                    <FormItem className="md:col-span-2">
+                      <FormLabel>Forma de atendimento<RequiredMark /></FormLabel>
+                      <FormControl>
+                        <RadioGroup
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          className="flex flex-wrap items-center gap-6"
+                        >
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="particular" id="care-particular" />
+                            <Label htmlFor="care-particular">Particular</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="convenio" id="care-convenio" disabled={activeAgreements.length === 0} />
+                            <Label htmlFor="care-convenio" className={activeAgreements.length === 0 ? "text-muted-foreground" : ""}>
+                              Convenio
+                            </Label>
+                          </div>
+                        </RadioGroup>
+                      </FormControl>
+                      {activeAgreements.length === 0 && (
+                        <p className="text-xs text-muted-foreground">Nenhum convenio disponivel no momento.</p>
+                      )}
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                {careTypeValue === "convenio" && (
+                  <>
+                    <FormField
+                      control={form.control}
+                      name="agreementId"
+                      render={({ field, fieldState }) => (
+                        <FormItem>
+                          <FormLabel>Convenio<RequiredMark /></FormLabel>
+                          <Select value={field.value || ""} onValueChange={field.onChange}>
+                            <FormControl>
+                              <SelectTrigger className={fieldState.error ? "border-destructive focus-visible:ring-destructive" : ""}>
+                                <SelectValue placeholder="Selecione o convenio" />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              {activeAgreements.map((agreement) => (
+                                <SelectItem key={agreement.id} value={agreement.id}>
+                                  {agreement.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="agreementPlan"
+                      render={({ field, fieldState }) => (
+                        <FormItem>
+                          <FormLabel>Tipo do plano<RequiredMark /></FormLabel>
+                          <Select value={field.value || ""} onValueChange={field.onChange} disabled={!selectedAgreement}>
+                            <FormControl>
+                              <SelectTrigger className={fieldState.error ? "border-destructive focus-visible:ring-destructive" : ""}>
+                                <SelectValue placeholder={selectedAgreement ? "Selecione o plano" : "Selecione um convenio primeiro"} />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              {selectedAgreementPlans.map((plan) => (
+                                <SelectItem key={plan} value={plan}>
+                                  {plan}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </>
+                )}
+
                 <FormField
                   control={form.control}
                   name="name"

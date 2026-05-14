@@ -12,6 +12,7 @@ export interface DashboardAppointment {
   patient: string;
   time: string;
   professional: string;
+  professionalDisplay?: string | null;
   status: string;
 }
 

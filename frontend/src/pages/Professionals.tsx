@@ -39,6 +39,7 @@ import {
 
 interface ProfessionalFormState {
   name: string;
+  specialty: string;
   email: string;
   password: string;
   phone: string;
@@ -47,6 +48,7 @@ interface ProfessionalFormState {
 
 interface EditFormState {
   name: string;
+  specialty: string;
   email: string;
   phone: string;
   role: ProfessionalRole;
@@ -55,6 +57,7 @@ interface EditFormState {
 
 const defaultCreateForm: ProfessionalFormState = {
   name: "",
+  specialty: "",
   email: "",
   password: "",
   phone: "",
@@ -63,6 +66,7 @@ const defaultCreateForm: ProfessionalFormState = {
 
 const defaultEditForm: EditFormState = {
   name: "",
+  specialty: "",
   email: "",
   phone: "",
   role: "common",
@@ -112,10 +116,10 @@ const Professionals = () => {
       return;
     }
 
-    if (!form.name.trim() || !form.email.trim() || !form.password.trim() || !form.role) {
+    if (!form.name.trim() || !form.specialty.trim() || !form.email.trim() || !form.password.trim() || !form.role) {
       toast({
         title: "Campos obrigatorios",
-        description: "Nome, email, senha e tipo de acesso sao obrigatorios.",
+        description: "Nome, especialidade, email, senha e tipo de acesso sao obrigatorios.",
         variant: "destructive",
       });
       return;
@@ -124,6 +128,7 @@ const Professionals = () => {
     setIsSubmitting(true);
     const response = await createProfessional({
       name: form.name.trim(),
+      specialty: form.specialty.trim(),
       email: form.email.trim(),
       password: form.password,
       phone: form.phone.trim(),
@@ -152,6 +157,7 @@ const Professionals = () => {
     setEditing(professional);
     setEditForm({
       name: professional.name,
+      specialty: professional.specialty || "",
       email: professional.email,
       phone: professional.phone || "",
       role: professional.role,
@@ -164,10 +170,10 @@ const Professionals = () => {
       return;
     }
 
-    if (!editForm.name.trim() || !editForm.email.trim() || !editForm.role) {
+    if (!editForm.name.trim() || !editForm.specialty.trim() || !editForm.email.trim() || !editForm.role) {
       toast({
         title: "Campos obrigatorios",
-        description: "Nome, email e tipo de acesso sao obrigatorios.",
+        description: "Nome, especialidade, email e tipo de acesso sao obrigatorios.",
         variant: "destructive",
       });
       return;
@@ -176,6 +182,7 @@ const Professionals = () => {
     setIsSubmitting(true);
     const response = await updateProfessional(editing.id, {
       name: editForm.name.trim(),
+      specialty: editForm.specialty.trim(),
       email: editForm.email.trim(),
       phone: editForm.phone.trim(),
       role: editForm.role,
@@ -258,6 +265,14 @@ const Professionals = () => {
                 />
               </div>
               <div className="space-y-2">
+                <Label>Especialidade *</Label>
+                <Input
+                  value={form.specialty}
+                  onChange={(event) => setForm((prev) => ({ ...prev, specialty: event.target.value }))}
+                  placeholder="Cardiologista, Fisioterapeuta..."
+                />
+              </div>
+              <div className="space-y-2">
                 <Label>Senha *</Label>
                 <Input
                   type="password"
@@ -333,6 +348,7 @@ const Professionals = () => {
               <TableHeader>
                 <TableRow className="bg-muted/50 hover:bg-muted/50">
                   <TableHead className="text-xs uppercase tracking-wider font-medium">Nome</TableHead>
+                  <TableHead className="text-xs uppercase tracking-wider font-medium">Especialidade</TableHead>
                   <TableHead className="text-xs uppercase tracking-wider font-medium">E-mail</TableHead>
                   <TableHead className="text-xs uppercase tracking-wider font-medium">Telefone</TableHead>
                   <TableHead className="text-xs uppercase tracking-wider font-medium">Role</TableHead>
@@ -346,6 +362,7 @@ const Professionals = () => {
                 {sortedProfessionals.map((professional) => (
                   <TableRow key={professional.id} className="transition-all duration-200 hover:bg-muted/30">
                     <TableCell className="font-medium">{professional.name}</TableCell>
+                    <TableCell className="text-muted-foreground">{professional.specialty || "Nao informada"}</TableCell>
                     <TableCell className="text-muted-foreground">{professional.email}</TableCell>
                     <TableCell className="text-muted-foreground">{professional.phone || "-"}</TableCell>
                     <TableCell>
@@ -407,6 +424,13 @@ const Professionals = () => {
                 type="email"
                 value={editForm.email}
                 onChange={(event) => setEditForm((prev) => ({ ...prev, email: event.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Especialidade *</Label>
+              <Input
+                value={editForm.specialty}
+                onChange={(event) => setEditForm((prev) => ({ ...prev, specialty: event.target.value }))}
               />
             </div>
             <div className="space-y-2">

@@ -6,9 +6,15 @@ export interface Appointment {
   date: string;
   time: string;
   professional: string;
+  professionalSpecialty?: string | null;
+  professionalDisplay?: string | null;
   professionalId?: string | null;
   reason: string;
   notes: string;
+  careType: "particular" | "convenio";
+  agreementId?: string | null;
+  agreementName?: string | null;
+  agreementPlan?: string | null;
   duration?: number;
   color?: string;
 }
@@ -21,6 +27,9 @@ export interface CreateAppointmentPayload {
   professional_id?: string;
   reason: string;
   notes: string;
+  careType: "particular" | "convenio";
+  agreementId?: string;
+  agreementPlan?: string;
   duration?: number;
 }
 
@@ -33,6 +42,9 @@ export interface UpdateAppointmentPayload {
   professional_id?: string;
   reason?: string;
   notes?: string;
+  careType?: "particular" | "convenio";
+  agreementId?: string;
+  agreementPlan?: string;
   duration?: number;
   status?: string;
 }

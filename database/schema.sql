@@ -15,8 +15,13 @@ CREATE TABLE IF NOT EXISTS pacientes (
   numero TEXT,
   bairro TEXT,
   cidade TEXT,
+  forma_atendimento TEXT NOT NULL DEFAULT 'particular',
+  convenio_id TEXT,
+  convenio_nome TEXT,
+  plano_convenio TEXT,
   observacoes TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS agenda (
@@ -29,6 +34,10 @@ CREATE TABLE IF NOT EXISTS agenda (
   status TEXT NOT NULL DEFAULT 'agendado',
   motivo TEXT,
   profissional TEXT,
+  forma_atendimento TEXT NOT NULL DEFAULT 'particular',
+  convenio_id TEXT,
+  convenio_nome TEXT,
+  plano_convenio TEXT,
   observacoes TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE CASCADE
@@ -52,14 +61,30 @@ CREATE TABLE IF NOT EXISTS financeiro (
   valor REAL NOT NULL,
   status TEXT NOT NULL,
   metodo_pagamento TEXT,
+  forma_atendimento TEXT NOT NULL DEFAULT 'particular',
+  convenio_id TEXT,
+  convenio_nome TEXT,
+  plano_convenio TEXT,
   observacoes TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (paciente_id) REFERENCES pacientes(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS convenios (
+  id TEXT PRIMARY KEY,
+  nome TEXT NOT NULL UNIQUE,
+  tipo_atendimento TEXT,
+  planos TEXT NOT NULL DEFAULT '[]',
+  observacoes TEXT,
+  status TEXT NOT NULL DEFAULT 'ativo',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS professionals (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  specialty TEXT,
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   phone TEXT,

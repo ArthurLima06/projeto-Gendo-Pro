@@ -95,7 +95,18 @@ def _fetch_financial_entries(patient_id: str, start_date: str, end_date: str) ->
     db = get_db()
     rows = db.execute(
         """
-        SELECT id, data, valor, status, metodo_pagamento, observacoes, forma_atendimento, convenio_nome, plano_convenio
+        SELECT
+            id,
+            data,
+            valor,
+            status,
+            metodo_pagamento,
+            observacoes,
+            forma_atendimento,
+            convenio_nome,
+            plano_convenio,
+            transaction_type,
+            created_at
         FROM financeiro
         WHERE paciente_id = ?
           AND date(data) BETWEEN date(?) AND date(?)
@@ -363,7 +374,7 @@ def generate_financial_pdf(patient_id: str, start_date: str, end_date: str) -> t
         len(entries),
     )
 
-    total_amount = sum(float(entry.get("valor") or 0) for entry in entries)
+    balance_amount = sum(float(entry.get("valor") or 0) for entry in entries)
     particular_entries = [
         entry for entry in entries if str(entry.get("forma_atendimento") or "particular").strip().lower() != "convenio"
     ]
@@ -375,7 +386,16 @@ def generate_financial_pdf(patient_id: str, start_date: str, end_date: str) -> t
         for entry in particular_entries
         if str(entry.get("status") or "").strip().lower() == "pago"
     )
-    pending_amount = max(sum(float(entry.get("valor") or 0) for entry in particular_entries) - paid_amount, 0)
+    pending_amount = sum(
+        abs(float(entry.get("valor") or 0))
+        for entry in particular_entries
+        if str(entry.get("status") or "").strip().lower() == "pendente"
+    )
+    overdue_amount = sum(
+        abs(float(entry.get("valor") or 0))
+        for entry in particular_entries
+        if str(entry.get("status") or "").strip().lower() == "atrasado"
+    )
 
     status_totals: dict[str, int] = {}
     for entry in entries:
@@ -420,11 +440,12 @@ def generate_financial_pdf(patient_id: str, start_date: str, end_date: str) -> t
 
     section_title("Resumo Financeiro")
     line(f"Total de lancamentos: {len(entries)}")
-    line(f"Valor total: R$ {total_amount:.2f}")
+    line(f"Saldo atual: R$ {balance_amount:.2f}")
     line(f"Lancamentos Particular: {len(particular_entries)}")
     line(f"Lancamentos Convenio: {len(convenio_entries)}")
     line(f"Valor pago: R$ {paid_amount:.2f}")
     line(f"Pendencias: R$ {pending_amount:.2f}")
+    line(f"Atrasos: R$ {overdue_amount:.2f}")
     if status_totals:
         line(
             "Status: "
@@ -438,20 +459,20 @@ def generate_financial_pdf(patient_id: str, start_date: str, end_date: str) -> t
     else:
         for entry in entries:
             entry_care_type = str(entry.get("forma_atendimento") or "particular").strip().lower()
-            if entry_care_type == "convenio":
-                line(f"- {entry.get('data')} | R$ {float(entry.get('valor') or 0):.2f}", indent=10)
-                line("  Tipo: Convenio", indent=10)
-                line(f"  Convenio: {_safe_value(entry.get('convenio_nome'))}", indent=10)
-                line(f"  Plano: {_safe_value(entry.get('plano_convenio'))}", indent=10)
-            else:
-                line(
-                    f"- {entry.get('data')} | {_safe_value(entry.get('status'))} | R$ {float(entry.get('valor') or 0):.2f}",
-                    indent=10,
-                )
-                if entry.get("metodo_pagamento"):
-                    line(f"  Metodo: {_safe_value(entry.get('metodo_pagamento'))}", indent=10)
-            if entry.get("observacoes"):
-                line(f"  Observacoes: {_safe_value(entry.get('observacoes'))}", indent=10)
+            entry_status = "Convenio" if entry_care_type == "convenio" else _safe_value(entry.get("status"))
+            line(
+                f"- Data: {_safe_value(entry.get('data'))} | Valor: R$ {float(entry.get('valor') or 0):.2f} | Status: {entry_status}",
+                indent=10,
+            )
+            line(
+                f"  Tipo: {_safe_value(entry.get('transaction_type') or 'payment')} | Atendimento: {'Convenio' if entry_care_type == 'convenio' else 'Particular'}",
+                indent=10,
+            )
+            line(f"  Metodo: {_safe_value(entry.get('metodo_pagamento'))}", indent=10)
+            line(f"  Convenio: {_safe_value(entry.get('convenio_nome'))}", indent=10)
+            line(f"  Plano: {_safe_value(entry.get('plano_convenio'))}", indent=10)
+            line(f"  Observacoes: {_safe_value(entry.get('observacoes'))}", indent=10)
+            line(f"  Data de registro: {_safe_value(entry.get('created_at'))}", indent=10)
             y -= 4
 
     pdf.save()
@@ -481,10 +502,14 @@ def generate_financial_excel(patient_id: str, start_date: str, end_date: str) ->
                 "Paciente": _safe_value(patient.get("nome")),
                 "Data": _safe_value(entry.get("data")),
                 "Valor": float(entry.get("valor") or 0),
+                "Tipo": _safe_value(entry.get("transaction_type") or "payment"),
                 "Forma de Atendimento": "Convenio" if is_convenio else "Particular",
-                "Convenio": _safe_value(entry.get("convenio_nome")) if is_convenio else "-",
-                "Plano": _safe_value(entry.get("plano_convenio")) if is_convenio else "-",
-                "Status Financeiro": "-" if is_convenio else _safe_value(entry.get("status")),
+                "Status": "Convenio" if is_convenio else _safe_value(entry.get("status")),
+                "Metodo de Pagamento": _safe_value(entry.get("metodo_pagamento")),
+                "Convenio": _safe_value(entry.get("convenio_nome")),
+                "Plano": _safe_value(entry.get("plano_convenio")),
+                "Observacoes": _safe_value(entry.get("observacoes")),
+                "Data do Registro": _safe_value(entry.get("created_at")),
             }
         )
 

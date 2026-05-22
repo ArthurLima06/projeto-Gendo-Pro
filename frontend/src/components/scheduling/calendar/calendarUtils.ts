@@ -72,7 +72,10 @@ export function getMonthGrid(year: number, month: number): (Date | null)[][] {
 }
 
 export function fmtDateKey(date: Date): string {
-  return date.toISOString().split("T")[0];
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export function isToday(date: Date): boolean {
@@ -184,11 +187,19 @@ export function buildDayPeriodLabel(refDate: Date) {
 }
 
 export function addDaysToDateKey(dateKey: string, offsetDays: number) {
-  const date = new Date(`${dateKey}T12:00:00`);
+  const [yearRaw = "0", monthRaw = "1", dayRaw = "1"] = dateKey.split("-");
+  const year = Number.parseInt(yearRaw, 10);
+  const month = Number.parseInt(monthRaw, 10);
+  const day = Number.parseInt(dayRaw, 10);
+  const date = new Date(year, Math.max(0, month - 1), day, 12, 0, 0, 0);
   date.setDate(date.getDate() + offsetDays);
   return fmtDateKey(date);
 }
 
 export function formatDatePtBr(dateKey: string) {
-  return new Date(`${dateKey}T12:00:00`).toLocaleDateString("pt-BR");
+  const [yearRaw = "0", monthRaw = "1", dayRaw = "1"] = dateKey.split("-");
+  const year = Number.parseInt(yearRaw, 10);
+  const month = Number.parseInt(monthRaw, 10);
+  const day = Number.parseInt(dayRaw, 10);
+  return new Date(year, Math.max(0, month - 1), day, 12, 0, 0, 0).toLocaleDateString("pt-BR");
 }

@@ -2,11 +2,16 @@ import { api, type ApiResponse } from "./api";
 
 export interface MedicalRecord {
   id: string;
+  patientId?: string | null;
   patient: string;
   date: string;
-  time: string;
+  time?: string | null;
   reason: string;
+  description?: string | null;
+  evolution?: string | null;
+  professional?: string | null;
   notes?: string;
+  attachments?: string[];
   registeredAt: string;
 }
 
@@ -19,6 +24,12 @@ export interface CreateRecordPayload {
 
 export async function getRecords(): Promise<ApiResponse<MedicalRecord[]>> {
   return api.get<MedicalRecord[]>("/records");
+}
+
+export async function getRecordsByPatient(
+  patientId: string
+): Promise<ApiResponse<MedicalRecord[]>> {
+  return api.get<MedicalRecord[]>(`/records/patient/${patientId}`);
 }
 
 export async function createRecord(

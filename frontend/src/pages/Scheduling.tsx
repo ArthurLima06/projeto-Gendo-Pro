@@ -21,6 +21,8 @@ import { useAppointmentStore, type Appointment } from "@/stores/appointmentStore
 import CalendarGrid from "@/components/scheduling/calendar/CalendarGrid";
 import EventModal, { type EventModalSubmitPayload } from "@/components/scheduling/calendar/EventModal";
 import EventPreviewCard from "@/components/scheduling/calendar/EventPreviewCard";
+import PatientRecordsDrawer from "@/components/scheduling/calendar/PatientRecordsDrawer";
+import { getRecordsByPatient, type MedicalRecord } from "@/services/recordsService";
 import {
   addDaysToDateKey,
   buildDayPeriodLabel,
@@ -102,6 +104,10 @@ const Scheduling = () => {
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [selectedAppointmentId, setSelectedAppointmentId] = useState<string | null>(null);
   const [resizeState, setResizeState] = useState<ResizeState | null>(null);
+  const [recordsDrawerOpen, setRecordsDrawerOpen] = useState(false);
+  const [recordsDrawerPatientName, setRecordsDrawerPatientName] = useState("");
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [patientRecords, setPatientRecords] = useState<MedicalRecord[]>([]);
 
   const previewOpenTimerRef = useRef<number | null>(null);
   const previewCloseTimerRef = useRef<number | null>(null);
@@ -461,6 +467,42 @@ const Scheduling = () => {
     });
   };
 
+  const handleOpenPatientRecords = async (appointment: Appointment) => {
+    const patientId =
+      appointment.patientId ||
+      patientOptions.find((item) => item.name === appointment.patient)?.id ||
+      "";
+
+    if (!patientId) {
+      toast({
+        title: "Paciente nao encontrado",
+        description: "Nao foi possivel identificar o paciente deste agendamento.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    closePreview();
+    setRecordsDrawerPatientName(appointment.patient || "Paciente");
+    setRecordsDrawerOpen(true);
+    setRecordsLoading(true);
+
+    const response = await getRecordsByPatient(patientId);
+    if (!response.success) {
+      setPatientRecords([]);
+      toast({
+        title: "Erro ao carregar prontuarios",
+        description: response.error.message,
+        variant: "destructive",
+      });
+      setRecordsLoading(false);
+      return;
+    }
+
+    setPatientRecords(response.data);
+    setRecordsLoading(false);
+  };
+
   const handleDragDrop = async (
     appointmentId: string,
     date: string,
@@ -558,7 +600,6 @@ const Scheduling = () => {
   ) => {
     const safeRepeatDays = Math.max(1, Math.min(5, repeatDays));
     let createdCount = 0;
-    let conflictCount = 0;
     let errorCount = 0;
     let lastErrorMessage = "";
 
@@ -578,17 +619,12 @@ const Scheduling = () => {
         continue;
       }
 
-      if (response.error.code === "APPOINTMENT_CONFLICT") {
-        conflictCount += 1;
-      } else {
-        errorCount += 1;
-      }
+      errorCount += 1;
       lastErrorMessage = response.error.message;
     }
 
     return {
       createdCount,
-      conflictCount,
       errorCount,
       totalRequested: safeRepeatDays,
       lastErrorMessage,
@@ -598,7 +634,6 @@ const Scheduling = () => {
   const notifyRecurringCreation = (
     summary: {
       createdCount: number;
-      conflictCount: number;
       errorCount: number;
       totalRequested: number;
       lastErrorMessage: string;
@@ -606,8 +641,6 @@ const Scheduling = () => {
     successTitle: string
   ) => {
     if (summary.createdCount > 0) {
-      const conflictPart =
-        summary.conflictCount > 0 ? ` ${summary.conflictCount} com conflito de horario.` : "";
       const errorPart =
         summary.errorCount > 0 ? ` ${summary.errorCount} com erro de validacao.` : "";
       toast({
@@ -615,7 +648,7 @@ const Scheduling = () => {
         description:
           summary.totalRequested === 1
             ? "O agendamento foi criado com sucesso."
-            : `${summary.createdCount} de ${summary.totalRequested} agendamentos criados.${conflictPart}${errorPart}`,
+            : `${summary.createdCount} de ${summary.totalRequested} agendamentos criados.${errorPart}`,
       });
       return;
     }
@@ -978,6 +1011,7 @@ const Scheduling = () => {
           appointment={preview.appointment}
           position={preview.position}
           durationMinutes={durationById[preview.appointment.id] || DEFAULT_DURATION_MINUTES}
+          onOpenRecord={() => void handleOpenPatientRecords(preview.appointment)}
           onEdit={() => openEditModal(preview.appointment)}
           onDelete={() => void handleDeleteAppointment(preview.appointment)}
           onMouseEnter={() => {
@@ -989,6 +1023,14 @@ const Scheduling = () => {
           onMouseLeave={handleHoverEnd}
         />
       )}
+
+      <PatientRecordsDrawer
+        open={recordsDrawerOpen}
+        patientName={recordsDrawerPatientName}
+        isLoading={recordsLoading}
+        records={patientRecords}
+        onOpenChange={setRecordsDrawerOpen}
+      />
     </div>
   );
 };

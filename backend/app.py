@@ -172,6 +172,55 @@ def create_app():
         except (TypeError, ValueError):
             abort(400, description=f"{field_name} precisa ser numÃ©rico.")
 
+    def parse_optional_float(field_name, value, default=None):
+        if value is None or value == "":
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            abort(400, description=f"{field_name} precisa ser numÃ©rico.")
+
+    def parse_boolean(value, field_name):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "sim", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "nao", "off"}:
+                return False
+        abort(400, description=f"{field_name} invalido. Use true ou false.")
+
+    def parse_status(value):
+        normalized = str(value or "").strip()
+        if not normalized:
+            return ""
+        allowed = {"Pago", "Pendente", "Atrasado", "Convenio"}
+        if normalized not in allowed:
+            abort(400, description="status invalido. Use Pago, Pendente, Atrasado ou Convenio.")
+        return normalized
+
+    def parse_particular_status(value):
+        normalized = parse_status(value)
+        if normalized == "Convenio":
+            abort(400, description="status invalido para atendimento particular.")
+        return normalized
+
+    def normalize_financial_amount(amount_value, status_value, care_type):
+        normalized_care_type = str(care_type or "particular").strip().lower()
+        numeric_amount = float(amount_value or 0)
+        if normalized_care_type == "convenio":
+            return numeric_amount
+
+        normalized_status = str(status_value or "").strip()
+        if normalized_status in {"Pendente", "Atrasado"}:
+            return -abs(numeric_amount)
+        if normalized_status == "Pago":
+            return abs(numeric_amount)
+        return numeric_amount
+
     def parse_care_type(value, required=True):
         normalized = str(value or "").strip().lower()
         if not normalized:
@@ -628,6 +677,191 @@ def create_app():
             (name,),
         ).fetchone()
 
+    def find_patient_by_id(db, patient_id):
+        if is_blank(patient_id):
+            return None
+        return db.execute(
+            """
+            SELECT id, nome, forma_atendimento, convenio_id, convenio_nome, plano_convenio
+            FROM pacientes
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (patient_id,),
+        ).fetchone()
+
+    def get_financial_settings(db, patient_id):
+        row = db.execute(
+            """
+            SELECT id, patient_id, auto_charge, consultation_price, created_at, updated_at
+            FROM financial_settings
+            WHERE patient_id = ?
+            LIMIT 1
+            """,
+            (patient_id,),
+        ).fetchone()
+        if row is not None:
+            return row
+
+        now = now_utc_iso()
+        setting_id = str(uuid.uuid4())
+        db.execute(
+            """
+            INSERT INTO financial_settings
+            (id, patient_id, auto_charge, consultation_price, created_at, updated_at)
+            VALUES (?, ?, 0, 0, ?, ?)
+            """,
+            (setting_id, patient_id, now, now),
+        )
+        return db.execute(
+            """
+            SELECT id, patient_id, auto_charge, consultation_price, created_at, updated_at
+            FROM financial_settings
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (setting_id,),
+        ).fetchone()
+
+    def settings_row_to_payload(row):
+        if row is None:
+            return {
+                "autoCharge": False,
+                "consultationPrice": 0,
+                "createdAt": None,
+                "updatedAt": None,
+            }
+        return {
+            "autoCharge": bool(row["auto_charge"]),
+            "consultationPrice": float(row["consultation_price"] or 0),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    def get_patient_financial_rows(db, patient_id):
+        return db.execute(
+            """
+            SELECT
+                f.*,
+                p.nome
+            FROM financeiro f
+            LEFT JOIN pacientes p ON p.id = f.paciente_id
+            WHERE f.paciente_id = ?
+            ORDER BY date(f.data) DESC, f.created_at DESC
+            """,
+            (patient_id,),
+        ).fetchall()
+
+    def build_financial_summary(rows):
+        total_paid = 0.0
+        total_pending = 0.0
+        total_overdue = 0.0
+        total_convenio = 0.0
+        total_particular = 0.0
+
+        for row in rows:
+            amount = float(row["valor"] or 0)
+            status = str(row["status"] or "").strip()
+            care_type = str(row["forma_atendimento"] or "particular").strip().lower()
+
+            if care_type == "convenio":
+                total_convenio += amount
+            else:
+                total_particular += amount
+
+            if status == "Pago":
+                total_paid += amount
+
+            if status == "Pendente":
+                if amount < 0:
+                    total_pending += abs(amount)
+                else:
+                    total_pending += amount
+
+            if status == "Atrasado":
+                if amount < 0:
+                    total_overdue += abs(amount)
+                else:
+                    total_overdue += amount
+
+        balance = sum(float(row["valor"] or 0) for row in rows)
+        return {
+            "balance": round(balance, 2),
+            "totalPaid": round(total_paid, 2),
+            "totalPending": round(total_pending, 2),
+            "totalOverdue": round(total_overdue, 2),
+            "totalConvenio": round(total_convenio, 2),
+            "totalParticular": round(total_particular, 2),
+        }
+
+    def create_automatic_charge_for_appointment(
+        db,
+        *,
+        appointment_id,
+        patient_id,
+        appointment_date,
+        appointment_time,
+        care_type,
+        agreement_id,
+        agreement_name,
+        agreement_plan,
+    ):
+        normalized_care_type = str(care_type or "particular").strip().lower()
+        if normalized_care_type != "particular":
+            return None
+
+        settings = get_financial_settings(db, patient_id)
+        auto_charge = bool(settings["auto_charge"])
+        consultation_price = float(settings["consultation_price"] or 0)
+        if (not auto_charge) or consultation_price <= 0:
+            return None
+
+        existing = db.execute(
+            """
+            SELECT id
+            FROM financeiro
+            WHERE appointment_id = ?
+              AND source = 'auto_appointment_charge'
+            LIMIT 1
+            """,
+            (appointment_id,),
+        ).fetchone()
+        if existing is not None:
+            return None
+
+        transaction_id = str(uuid.uuid4())
+        now = now_utc_iso()
+        db.execute(
+            """
+            INSERT INTO financeiro
+            (
+                id, paciente_id, data, valor, status, metodo_pagamento,
+                forma_atendimento, convenio_id, convenio_nome, plano_convenio,
+                observacoes, created_at, updated_at, transaction_type, source, appointment_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                transaction_id,
+                patient_id,
+                appointment_date,
+                -abs(consultation_price),
+                "Pendente",
+                None,
+                normalized_care_type,
+                agreement_id,
+                agreement_name,
+                agreement_plan,
+                f"Cobranca automatica de consulta ({appointment_time})",
+                now,
+                now,
+                "charge",
+                "auto_appointment_charge",
+                appointment_id,
+            ),
+        )
+        return transaction_id
+
     def appointment_row_to_payload(row):
         if row is None:
             return None
@@ -642,6 +876,7 @@ def create_app():
             professional_display = f"{professional_name} - {professional_specialty}"
         return {
             "id": row["id"],
+            "patientId": row["paciente_id"] if "paciente_id" in columns else None,
             "patient": row["nome"],
             "date": row["data"],
             "time": row["horario"],
@@ -659,37 +894,72 @@ def create_app():
             "agreementPlan": row["plano_convenio"] if "plano_convenio" in columns else None,
         }
 
+    def parse_json_list(value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [item for item in value if item not in (None, "")]
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return []
+            if isinstance(parsed, list):
+                return [item for item in parsed if item not in (None, "")]
+        return []
+
     def medical_record_row_to_payload(row):
         if row is None:
             return None
-        patient_name = row["paciente_nome"] or ""
+        columns = set(row.keys())
+        patient_name = row["paciente_nome"] if "paciente_nome" in columns else ""
+        reason = row["observacoes"] if "observacoes" in columns else ""
+        notes = row["observacoes"] if "observacoes" in columns else ""
+        professional_name = row["professional_name"] if "professional_name" in columns else None
+        description = row["descricao"] if "descricao" in columns else reason
+        evolution = row["evolucao"] if "evolucao" in columns else None
+        attachments = parse_json_list(row["anexos"]) if "anexos" in columns else []
         return {
             "id": row["id"],
+            "patientId": row["paciente_id"] if "paciente_id" in columns else None,
             "patient": patient_name,
             "date": row["data"],
-            "time": row["hora"],
-            "reason": row["observacoes"],
-            "notes": row["observacoes"],
+            "time": row["hora"] if "hora" in columns else None,
+            "reason": reason,
+            "description": description,
+            "evolution": evolution,
+            "professional": professional_name,
+            "notes": notes,
+            "attachments": attachments,
             "registeredAt": row["created_at"],
         }
 
     def financial_row_to_payload(row):
         if row is None:
             return None
+        columns = set(row.keys())
         amount = row["valor"] or 0
         return {
             "id": row["id"],
+            "patientId": row["paciente_id"] if "paciente_id" in columns else None,
             "patient": row["nome"],
             "date": row["data"],
             "amount": f"{amount:.2f}",
             "status": row["status"],
-            "method": row["metodo_pagamento"] if "metodo_pagamento" in set(row.keys()) else None,
-            "notes": row["observacoes"] if "observacoes" in set(row.keys()) else None,
+            "method": row["metodo_pagamento"] if "metodo_pagamento" in columns else None,
+            "notes": row["observacoes"] if "observacoes" in columns else None,
             "registeredAt": row["created_at"],
-            "careType": row["forma_atendimento"] if "forma_atendimento" in set(row.keys()) else "particular",
-            "agreementId": row["convenio_id"] if "convenio_id" in set(row.keys()) else None,
-            "agreementName": row["convenio_nome"] if "convenio_nome" in set(row.keys()) else None,
-            "agreementPlan": row["plano_convenio"] if "plano_convenio" in set(row.keys()) else None,
+            "updatedAt": row["updated_at"] if "updated_at" in columns else None,
+            "careType": row["forma_atendimento"] if "forma_atendimento" in columns else "particular",
+            "agreementId": row["convenio_id"] if "convenio_id" in columns else None,
+            "agreementName": row["convenio_nome"] if "convenio_nome" in columns else None,
+            "agreementPlan": row["plano_convenio"] if "plano_convenio" in columns else None,
+            "type": row["transaction_type"] if "transaction_type" in columns else "payment",
+            "source": row["source"] if "source" in columns else "manual",
+            "appointmentId": row["appointment_id"] if "appointment_id" in columns else None,
         }
 
     def notification_row_to_payload(row):
@@ -1697,45 +1967,6 @@ def create_app():
             require_active=True,
         )
 
-        if (not is_blank(professional_id) or not is_blank(professional_name)) and not is_blank(normalized_date) and not is_blank(normalized_time):
-            if not is_blank(professional_id):
-                conflict_row = db.execute(
-                    """
-                    SELECT id
-                    FROM agenda
-                    WHERE professional_id = ?
-                      AND data = ?
-                      AND horario = ?
-                    LIMIT 1
-                    """,
-                    (professional_id, normalized_date, normalized_time),
-                ).fetchone()
-            else:
-                conflict_row = db.execute(
-                    """
-                    SELECT id
-                    FROM agenda
-                    WHERE profissional = ?
-                      AND data = ?
-                      AND horario = ?
-                    LIMIT 1
-                    """,
-                    (professional_name, normalized_date, normalized_time),
-                ).fetchone()
-            if conflict_row is not None:
-                return (
-                    jsonify(
-                        {
-                            "success": False,
-                            "error": {
-                                "code": "APPOINTMENT_CONFLICT",
-                                "message": "Ja existe um agendamento para este profissional neste horario.",
-                            },
-                        }
-                    ),
-                    409,
-                )
-
         new_id = str(uuid.uuid4())
         db.execute(
             """
@@ -1766,6 +1997,17 @@ def create_app():
             "Novo agendamento",
             f"{patient['nome']} Ã s {normalized_time} em {normalized_date}",
             linked_date=normalized_date,
+        )
+        create_automatic_charge_for_appointment(
+            db,
+            appointment_id=new_id,
+            patient_id=patient["id"],
+            appointment_date=normalized_date,
+            appointment_time=normalized_time,
+            care_type=care_type,
+            agreement_id=agreement_id,
+            agreement_name=agreement_name,
+            agreement_plan=agreement_plan,
         )
         db.commit()
 
@@ -1891,54 +2133,6 @@ def create_app():
 
         if not updates:
             abort(400, description="Nenhum campo válido para atualização.")
-
-        if (not is_blank(next_professional) or not is_blank(next_professional_id)) and not is_blank(next_date) and not is_blank(next_time):
-            if not is_blank(next_professional_id):
-                conflict_row = db.execute(
-                    """
-                    SELECT id
-                    FROM agenda
-                    WHERE id <> ?
-                      AND professional_id = ?
-                      AND data = ?
-                      AND horario = ?
-                    LIMIT 1
-                    """,
-                    (appointment_id, next_professional_id, next_date, next_time),
-                ).fetchone()
-            else:
-                conflict_row = db.execute(
-                    """
-                    SELECT id
-                    FROM agenda
-                    WHERE id <> ?
-                      AND profissional = ?
-                      AND data = ?
-                      AND horario = ?
-                    LIMIT 1
-                    """,
-                    (appointment_id, next_professional, next_date, next_time),
-                ).fetchone()
-            if conflict_row is not None:
-                app.logger.warning(
-                    "Appointment conflict on update %s -> professional=%s date=%s time=%s",
-                    appointment_id,
-                    next_professional,
-                    next_date,
-                    next_time,
-                )
-                return (
-                    jsonify(
-                        {
-                            "success": False,
-                            "error": {
-                                "code": "APPOINTMENT_CONFLICT",
-                                "message": "Já existe um agendamento para este profissional neste horário.",
-                            },
-                        }
-                    ),
-                    409,
-                )
 
         params.append(appointment_id)
 
@@ -2113,8 +2307,14 @@ def create_app():
         if care_type == "particular":
             if not status_value:
                 abort(400, description="status e obrigatorio para atendimento particular.")
+            status_value = parse_particular_status(status_value)
         else:
             status_value = "Convenio"
+        amount_value = normalize_financial_amount(
+            parse_float("valor", data.get("valor")),
+            status_value,
+            care_type,
+        )
 
         new_id = str(uuid.uuid4())
 
@@ -2128,7 +2328,7 @@ def create_app():
                 new_id,
                 data.get("paciente_id"),
                 data.get("data"),
-                parse_float("valor", data.get("valor")),
+                amount_value,
                 status_value,
                 data.get("metodo_pagamento"),
                 care_type,
@@ -2241,6 +2441,230 @@ def create_app():
         payload = [financial_row_to_payload(row) for row in rows]
         return jsonify({"success": True, "data": payload})
 
+    @app.route("/api/financial/patients", methods=["GET"])
+    def get_financial_patients():
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
+
+        db = get_db()
+        patient_rows = db.execute(
+            """
+            SELECT id, nome, forma_atendimento, convenio_id, convenio_nome, plano_convenio
+            FROM pacientes
+            ORDER BY nome
+            """
+        ).fetchall()
+
+        financial_rows = db.execute(
+            """
+            SELECT *
+            FROM financeiro
+            ORDER BY date(data) DESC, created_at DESC
+            """
+        ).fetchall()
+        grouped_rows = {}
+        for row in financial_rows:
+            grouped_rows.setdefault(row["paciente_id"], []).append(row)
+
+        settings_rows = db.execute(
+            """
+            SELECT patient_id, auto_charge, consultation_price, created_at, updated_at
+            FROM financial_settings
+            """
+        ).fetchall()
+        settings_map = {row["patient_id"]: row for row in settings_rows}
+
+        payload = []
+        for patient in patient_rows:
+            rows = grouped_rows.get(patient["id"], [])
+            summary = build_financial_summary(rows)
+            settings_row = settings_map.get(patient["id"])
+            if settings_row is None:
+                settings_payload = {
+                    "autoCharge": False,
+                    "consultationPrice": 0,
+                    "createdAt": None,
+                    "updatedAt": None,
+                }
+            else:
+                settings_payload = settings_row_to_payload(settings_row)
+
+            payload.append(
+                {
+                    "id": patient["id"],
+                    "name": patient["nome"],
+                    "careType": patient["forma_atendimento"] or "particular",
+                    "agreementId": patient["convenio_id"],
+                    "agreementName": patient["convenio_nome"],
+                    "agreementPlan": patient["plano_convenio"],
+                    "summary": summary,
+                    "settings": settings_payload,
+                    "transactionsCount": len(rows),
+                }
+            )
+
+        return jsonify({"success": True, "data": payload})
+
+    @app.route("/api/financial/patient/<patient_id>", methods=["GET"])
+    def get_financial_patient_detail(patient_id):
+        user = require_auth()
+        if not isinstance(user, dict):
+            return user
+
+        db = get_db()
+        patient = find_patient_by_id(db, patient_id)
+        if patient is None:
+            abort(404, description="Paciente nao encontrado.")
+
+        settings_row = get_financial_settings(db, patient_id)
+        financial_rows = get_patient_financial_rows(db, patient_id)
+        transactions = [financial_row_to_payload(row) for row in financial_rows]
+
+        payload = {
+            "patient": {
+                "id": patient["id"],
+                "name": patient["nome"],
+                "careType": patient["forma_atendimento"] or "particular",
+                "agreementId": patient["convenio_id"],
+                "agreementName": patient["convenio_nome"],
+                "agreementPlan": patient["plano_convenio"],
+            },
+            "summary": build_financial_summary(financial_rows),
+            "settings": settings_row_to_payload(settings_row),
+            "transactions": transactions,
+        }
+        return jsonify({"success": True, "data": payload})
+
+    @app.route("/api/financial/patient/<patient_id>/settings", methods=["PUT"])
+    def update_financial_patient_settings(patient_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
+
+        db = get_db()
+        patient = find_patient_by_id(db, patient_id)
+        if patient is None:
+            abort(404, description="Paciente nao encontrado.")
+
+        data = json_payload()
+        if "autoCharge" not in data and "consultationPrice" not in data:
+            abort(400, description="Nenhum campo valido para atualizacao.")
+
+        current = get_financial_settings(db, patient_id)
+        auto_charge = bool(current["auto_charge"])
+        consultation_price = float(current["consultation_price"] or 0)
+
+        if "autoCharge" in data:
+            auto_charge = parse_boolean(data.get("autoCharge"), "autoCharge")
+        if "consultationPrice" in data:
+            consultation_price = parse_optional_float(
+                "consultationPrice",
+                data.get("consultationPrice"),
+                default=0,
+            )
+            consultation_price = max(0, float(consultation_price or 0))
+
+        now = now_utc_iso()
+        db.execute(
+            """
+            UPDATE financial_settings
+            SET auto_charge = ?, consultation_price = ?, updated_at = ?
+            WHERE patient_id = ?
+            """,
+            (1 if auto_charge else 0, consultation_price, now, patient_id),
+        )
+        db.commit()
+
+        updated = get_financial_settings(db, patient_id)
+        return jsonify({"success": True, "data": settings_row_to_payload(updated)})
+
+    @app.route("/api/financial/patient/<patient_id>/transactions", methods=["POST"])
+    def create_financial_patient_transaction(patient_id):
+        user = require_admin()
+        if not isinstance(user, dict):
+            return user
+
+        db = get_db()
+        patient = find_patient_by_id(db, patient_id)
+        if patient is None:
+            abort(404, description="Paciente nao encontrado.")
+
+        data = json_payload()
+        require_fields(data, ["date", "amount", "careType"])
+
+        normalized_date = parse_appointment_date(data.get("date"))
+        amount_value = parse_float("amount", data.get("amount"))
+        care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
+            db,
+            data.get("careType"),
+            data.get("agreementId"),
+            data.get("agreementPlan"),
+            require_active=True,
+        )
+
+        explicit_status = str(data.get("status") or "").strip()
+        if care_type == "convenio":
+            status_value = "Convenio"
+        elif explicit_status:
+            status_value = parse_particular_status(explicit_status)
+        else:
+            status_value = "Pago" if amount_value >= 0 else "Pendente"
+        amount_value = normalize_financial_amount(amount_value, status_value, care_type)
+
+        transaction_type = str(data.get("type") or "").strip().lower()
+        if not transaction_type:
+            if care_type == "particular" and status_value in {"Pendente", "Atrasado"}:
+                transaction_type = "charge"
+            else:
+                transaction_type = "payment" if amount_value >= 0 else "charge"
+        if transaction_type not in {"payment", "charge", "adjustment"}:
+            abort(400, description="type invalido. Use payment, charge ou adjustment.")
+
+        now = now_utc_iso()
+        new_id = str(uuid.uuid4())
+        db.execute(
+            """
+            INSERT INTO financeiro
+            (
+                id, paciente_id, data, valor, status, metodo_pagamento,
+                forma_atendimento, convenio_id, convenio_nome, plano_convenio,
+                observacoes, created_at, updated_at, transaction_type, source, appointment_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id,
+                patient_id,
+                normalized_date,
+                amount_value,
+                status_value,
+                data.get("method"),
+                care_type,
+                agreement_id,
+                agreement_name,
+                agreement_plan,
+                data.get("notes"),
+                now,
+                now,
+                transaction_type,
+                "manual_patient_panel",
+                data.get("appointmentId"),
+            ),
+        )
+        db.commit()
+
+        row = db.execute(
+            """
+            SELECT f.*, p.nome
+            FROM financeiro f
+            LEFT JOIN pacientes p ON p.id = f.paciente_id
+            WHERE f.id = ?
+            """,
+            (new_id,),
+        ).fetchone()
+        return jsonify({"success": True, "data": financial_row_to_payload(row)})
+
     @app.route("/api/financial", methods=["POST"])
     def create_financial_record_v2():
         user = require_admin()
@@ -2265,15 +2689,27 @@ def create_app():
         if care_type == "particular":
             if not status_value:
                 abort(400, description="status e obrigatorio para atendimento particular.")
+            status_value = parse_particular_status(status_value)
         else:
             status_value = "Convenio"
+        amount_value = normalize_financial_amount(amount_value, status_value, care_type)
+
+        transaction_type = str(data.get("type") or "payment").strip().lower()
+        if transaction_type not in {"payment", "charge", "adjustment"}:
+            abort(400, description="type invalido. Use payment, charge ou adjustment.")
+        source = str(data.get("source") or "manual").strip() or "manual"
 
         new_id = str(uuid.uuid4())
+        now = now_utc_iso()
         db.execute(
             """
             INSERT INTO financeiro
-            (id, paciente_id, data, valor, status, metodo_pagamento, forma_atendimento, convenio_id, convenio_nome, plano_convenio, observacoes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (
+                id, paciente_id, data, valor, status, metodo_pagamento,
+                forma_atendimento, convenio_id, convenio_nome, plano_convenio,
+                observacoes, created_at, updated_at, transaction_type, source, appointment_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
@@ -2287,7 +2723,11 @@ def create_app():
                 agreement_name,
                 agreement_plan,
                 data.get("notes"),
-                datetime.utcnow().isoformat(),
+                now,
+                now,
+                transaction_type,
+                source,
+                data.get("appointmentId"),
             ),
         )
         create_notification(
@@ -2356,6 +2796,8 @@ def create_app():
                 value = patient["id"]
             if field == "amount":
                 value = parse_float("amount", value)
+            if field == "status":
+                value = parse_status(value)
             updates.append(f"{column} = ?")
             params.append(value)
 
@@ -2380,12 +2822,29 @@ def create_app():
                 updates.append("status = ?")
                 params.append("Convenio")
             else:
-                status_candidate = str(data.get("status") or existing_status).strip()
+                status_candidate = parse_particular_status(str(data.get("status") or existing_status).strip())
                 if not status_candidate or status_candidate.lower() == "convenio":
                     abort(400, description="status e obrigatorio para atendimento particular.")
+                if "status" in data:
+                    updates.append("status = ?")
+                    params.append(status_candidate)
+
+        if "status" in data and str(next_care_type or "particular").strip().lower() != "convenio":
+            status_candidate = parse_particular_status(str(data.get("status") or existing_status).strip())
+            if "status" in mapping:
+                params_index = None
+                for index, assignment in enumerate(updates):
+                    if assignment == "status = ?":
+                        params_index = index
+                        break
+                if params_index is not None:
+                    params[params_index] = status_candidate
 
         if not updates:
             abort(400, description="Nenhum campo valido para atualizacao.")
+
+        updates.append("updated_at = ?")
+        params.append(now_utc_iso())
 
         params.append(financial_id)
         cursor = db.execute(
@@ -2517,6 +2976,65 @@ def create_app():
         ).fetchall()
         payload = [medical_record_row_to_payload(row) for row in rows]
         return jsonify({"success": True, "data": payload})
+
+    @app.route("/api/records/patient/<patient_id>", methods=["GET"])
+    def get_records_by_patient(patient_id):
+        db = get_db()
+        patient = find_patient_by_id(db, patient_id)
+        if patient is None:
+            abort(404, description="Paciente nao encontrado.")
+
+        record_rows = db.execute(
+            """
+            SELECT
+                r.id,
+                r.paciente_id,
+                r.paciente_nome,
+                r.data,
+                r.hora,
+                r.observacoes,
+                r.anexos,
+                r.created_at,
+                NULL AS descricao,
+                NULL AS evolucao,
+                NULL AS professional_name
+            FROM registros r
+            WHERE r.paciente_id = ?
+            """,
+            (patient_id,),
+        ).fetchall()
+        session_rows = db.execute(
+            """
+            SELECT
+                s.id,
+                s.paciente_id,
+                p.nome AS paciente_nome,
+                s.data,
+                '' AS hora,
+                s.observacoes,
+                NULL AS anexos,
+                s.created_at,
+                s.atividade AS descricao,
+                s.evolucao AS evolucao,
+                NULL AS professional_name
+            FROM sessoes s
+            LEFT JOIN pacientes p ON p.id = s.paciente_id
+            WHERE s.paciente_id = ?
+            """,
+            (patient_id,),
+        ).fetchall()
+
+        combined = [medical_record_row_to_payload(row) for row in record_rows]
+        combined.extend([medical_record_row_to_payload(row) for row in session_rows])
+
+        def _sort_key(item):
+            date = item.get("date") or ""
+            time = item.get("time") or ""
+            registered = item.get("registeredAt") or ""
+            return (date, time, registered)
+
+        combined.sort(key=_sort_key, reverse=True)
+        return jsonify({"success": True, "data": combined})
 
     @app.route("/api/records", methods=["POST"])
     def create_record_v2():

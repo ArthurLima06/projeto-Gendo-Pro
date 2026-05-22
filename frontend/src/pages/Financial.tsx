@@ -1,259 +1,284 @@
-import { useEffect, useState } from "react";
-import { DollarSign, Download, FileText, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Download, FileText, Loader2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { StatusBadge } from "@/components/StatusBadge";
-import { TableSkeleton } from "@/components/TableSkeleton";
+import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/EmptyState";
+import { TableSkeleton } from "@/components/TableSkeleton";
+import { StatusBadge } from "@/components/StatusBadge";
 import { toast } from "@/hooks/use-toast";
-import {
-  createFinancialRecord,
-  generateFinancialExcelReport,
-  generateFinancialPdfReport,
-  getFinancialRecords,
-  updateFinancialRecord,
-  type FinancialRecord,
-} from "@/services/financialService";
-import { getPatients, type Patient } from "@/services/patientsService";
 import { getAgreements, type Agreement } from "@/services/agreementsService";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
+  createPatientFinancialTransaction,
+  generateFinancialExcelReport,
+  generateFinancialPdfReport,
+  getFinancialPatientDetail,
+  getFinancialPatients,
+  updateFinancialPatientSettings,
+  type FinancialPatientDetail,
+  type FinancialPatientListItem,
+} from "@/services/financialService";
+
+interface TransactionDraft {
+  date: string;
+  amount: string;
+  careType: "particular" | "convenio";
+  status: "Pago" | "Pendente" | "Atrasado";
+  agreementId: string;
+  agreementPlan: string;
+  method: string;
+  notes: string;
+}
+
+interface SettingsDraft {
+  autoCharge: boolean;
+  consultationPrice: string;
+}
+
+interface ReportFilterDraft {
+  startDate: string;
+  endDate: string;
+}
+
+const INITIAL_TRANSACTION_DRAFT: TransactionDraft = {
+  date: "",
+  amount: "",
+  careType: "particular",
+  status: "Pago",
+  agreementId: "",
+  agreementPlan: "",
+  method: "",
+  notes: "",
+};
+
+function formatCurrency(value: number): string {
+  return value.toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
+}
+
+function formatTransactionType(type?: string): string {
+  const normalized = (type || "").toLowerCase();
+  if (normalized === "charge") {
+    return "Cobranca";
+  }
+  if (normalized === "adjustment") {
+    return "Ajuste";
+  }
+  return "Pagamento";
+}
+
+function formatRegisteredAt(value?: string | null): string {
+  if (!value) {
+    return "-";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleString("pt-BR");
+}
 
 const Financial = () => {
   const { userRole } = useAuth();
   const isAdmin = userRole === "admin";
 
-  const [isRegistering, setIsRegistering] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [payments, setPayments] = useState<FinancialRecord[]>([]);
-  const [patients, setPatients] = useState<Patient[]>([]);
-  const [agreements, setAgreements] = useState<Agreement[]>([]);
   const [loadError, setLoadError] = useState("");
+  const [patients, setPatients] = useState<FinancialPatientListItem[]>([]);
+  const [agreements, setAgreements] = useState<Agreement[]>([]);
+  const [openPatientId, setOpenPatientId] = useState("");
+  const [detailByPatientId, setDetailByPatientId] = useState<Record<string, FinancialPatientDetail>>({});
+  const [loadingPatientId, setLoadingPatientId] = useState<string | null>(null);
+  const [transactionDrafts, setTransactionDrafts] = useState<Record<string, TransactionDraft>>({});
+  const [settingsDrafts, setSettingsDrafts] = useState<Record<string, SettingsDraft>>({});
+  const [reportDrafts, setReportDrafts] = useState<Record<string, ReportFilterDraft>>({});
+  const [submittingPatientId, setSubmittingPatientId] = useState<string | null>(null);
+  const [savingSettingsPatientId, setSavingSettingsPatientId] = useState<string | null>(null);
+  const [exportingKey, setExportingKey] = useState<string>("");
 
-  const [formPatient, setFormPatient] = useState("");
-  const [formDate, setFormDate] = useState("");
-  const [formAmount, setFormAmount] = useState("");
-  const [formCareType, setFormCareType] = useState<"particular" | "convenio">("particular");
-  const [formStatus, setFormStatus] = useState("");
-  const [formAgreementId, setFormAgreementId] = useState("");
-  const [formAgreementPlan, setFormAgreementPlan] = useState("");
-  const [formMethod, setFormMethod] = useState("");
-  const [formNotes, setFormNotes] = useState("");
+  const activeAgreements = useMemo(
+    () => agreements.filter((item) => item.status === "ativo"),
+    [agreements]
+  );
 
-  const [reportPatientId, setReportPatientId] = useState("");
-  const [reportStartDate, setReportStartDate] = useState("");
-  const [reportEndDate, setReportEndDate] = useState("");
-  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
-  const [isExportingReport, setIsExportingReport] = useState(false);
+  const loadPatients = async () => {
+    setIsLoading(true);
+    setLoadError("");
 
-  const [editingPayment, setEditingPayment] = useState<FinancialRecord | null>(null);
-  const [editPatient, setEditPatient] = useState("");
-  const [editDate, setEditDate] = useState("");
-  const [editAmount, setEditAmount] = useState("");
-  const [editCareType, setEditCareType] = useState<"particular" | "convenio">("particular");
-  const [editStatus, setEditStatus] = useState("");
-  const [editAgreementId, setEditAgreementId] = useState("");
-  const [editAgreementPlan, setEditAgreementPlan] = useState("");
-  const [editMethod, setEditMethod] = useState("");
-  const [editNotes, setEditNotes] = useState("");
-  const [isSavingEdit, setIsSavingEdit] = useState(false);
+    const [patientsResponse, agreementsResponse] = await Promise.all([
+      getFinancialPatients(),
+      getAgreements({ activeOnly: true }),
+    ]);
 
-  useEffect(() => {
-    const load = async () => {
-      setIsLoading(true);
-      const [finRes, patRes, agreementsRes] = await Promise.all([
-        getFinancialRecords(),
-        getPatients(),
-        getAgreements({ activeOnly: true }),
-      ]);
-      if (finRes.success === false) setLoadError(finRes.error.message);
-      else setPayments(finRes.data);
-      if (patRes.success) setPatients(patRes.data);
-      if (agreementsRes.success) setAgreements(agreementsRes.data);
+    if (!patientsResponse.success) {
+      setLoadError(patientsResponse.error.message);
+      setPatients([]);
       setIsLoading(false);
-    };
-    void load();
-  }, []);
+      return;
+    }
 
-  const activeAgreements = agreements.filter((item) => item.status === "ativo");
-  const selectedCreateAgreement = activeAgreements.find((item) => item.id === formAgreementId);
-  const selectedCreatePlans = selectedCreateAgreement?.plans || [];
-  const selectedEditAgreement = activeAgreements.find((item) => item.id === editAgreementId);
-  const selectedEditPlans = selectedEditAgreement?.plans || [];
-
-  const resetCreateForm = () => {
-    setFormPatient("");
-    setFormDate("");
-    setFormAmount("");
-    setFormCareType("particular");
-    setFormStatus("");
-    setFormAgreementId("");
-    setFormAgreementPlan("");
-    setFormMethod("");
-    setFormNotes("");
+    setPatients(patientsResponse.data);
+    if (agreementsResponse.success) {
+      setAgreements(agreementsResponse.data);
+    }
+    setIsLoading(false);
   };
 
-  const hasValidReportRange = () => {
-    if (!reportPatientId || !reportStartDate || !reportEndDate) {
+  useEffect(() => {
+    void loadPatients();
+  }, []);
+
+  const ensurePatientDetailLoaded = async (patientId: string) => {
+    if (detailByPatientId[patientId]) {
+      return;
+    }
+
+    setLoadingPatientId(patientId);
+    const response = await getFinancialPatientDetail(patientId);
+    setLoadingPatientId(null);
+
+    if (!response.success) {
       toast({
-        title: "Filtros obrigatorios",
-        description: "Selecione paciente, data inicial e data final para gerar o relatorio.",
+        title: "Erro ao carregar financeiro do paciente",
+        description: response.error.message,
         variant: "destructive",
       });
-      return false;
+      return;
     }
-    if (reportEndDate < reportStartDate) {
+
+    const detail = response.data;
+    setDetailByPatientId((prev) => ({ ...prev, [patientId]: detail }));
+    setSettingsDrafts((prev) => ({
+      ...prev,
+      [patientId]: {
+        autoCharge: detail.settings.autoCharge,
+        consultationPrice: String(detail.settings.consultationPrice ?? 0),
+      },
+    }));
+    setTransactionDrafts((prev) => ({
+      ...prev,
+      [patientId]: {
+        ...INITIAL_TRANSACTION_DRAFT,
+        date: new Date().toISOString().slice(0, 10),
+        careType: detail.patient.careType || "particular",
+        agreementId: detail.patient.agreementId || "",
+        agreementPlan: detail.patient.agreementPlan || "",
+      },
+    }));
+    setReportDrafts((prev) => {
+      if (prev[patientId]) {
+        return prev;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      return {
+        ...prev,
+        [patientId]: {
+          startDate: today.slice(0, 8) + "01",
+          endDate: today,
+        },
+      };
+    });
+  };
+
+  const refreshPatientDetail = async (patientId: string) => {
+    const response = await getFinancialPatientDetail(patientId);
+    if (!response.success) {
+      toast({
+        title: "Erro ao atualizar dados financeiros",
+        description: response.error.message,
+        variant: "destructive",
+      });
+      return;
+    }
+    setDetailByPatientId((prev) => ({ ...prev, [patientId]: response.data }));
+    await loadPatients();
+  };
+
+  const updateTransactionDraft = (patientId: string, partial: Partial<TransactionDraft>) => {
+    setTransactionDrafts((prev) => ({
+      ...prev,
+      [patientId]: { ...(prev[patientId] || INITIAL_TRANSACTION_DRAFT), ...partial },
+    }));
+  };
+
+  const updateSettingsDraft = (patientId: string, partial: Partial<SettingsDraft>) => {
+    setSettingsDrafts((prev) => ({
+      ...prev,
+      [patientId]: {
+        autoCharge: false,
+        consultationPrice: "0",
+        ...(prev[patientId] || {}),
+        ...partial,
+      },
+    }));
+  };
+
+  const updateReportDraft = (patientId: string, partial: Partial<ReportFilterDraft>) => {
+    setReportDrafts((prev) => ({
+      ...prev,
+      [patientId]: {
+        startDate: "",
+        endDate: "",
+        ...(prev[patientId] || {}),
+        ...partial,
+      },
+    }));
+  };
+
+  const validatePeriod = (patientId: string): ReportFilterDraft | null => {
+    const draft = reportDrafts[patientId];
+    if (!draft?.startDate || !draft?.endDate) {
+      toast({
+        title: "Periodo obrigatorio",
+        description: "Selecione data inicial e final para exportar.",
+        variant: "destructive",
+      });
+      return null;
+    }
+    if (draft.endDate < draft.startDate) {
       toast({
         title: "Periodo invalido",
         description: "Data final nao pode ser anterior a data inicial.",
         variant: "destructive",
       });
-      return false;
+      return null;
     }
-    return true;
+    return draft;
   };
 
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!isAdmin) return;
-
-    if (!formPatient || !formDate || !formAmount) {
-      toast({ title: "Erro", description: "Preencha todos os campos obrigatorios.", variant: "destructive" });
+  const handleRegisterTransaction = async (patientId: string) => {
+    if (!isAdmin) {
       return;
     }
-    if (formCareType === "particular" && !formStatus) {
-      toast({ title: "Erro", description: "Selecione o status para atendimento particular.", variant: "destructive" });
-      return;
-    }
-    if (formCareType === "convenio") {
-      if (activeAgreements.length === 0) {
-        toast({ title: "Nenhum convenio disponivel no momento.", variant: "destructive" });
-        return;
-      }
-      if (!formAgreementId || !formAgreementPlan) {
-        toast({ title: "Erro", description: "Selecione convenio e plano para atendimento por convenio.", variant: "destructive" });
-        return;
-      }
-    }
 
-    setIsRegistering(true);
-    try {
-      const res = await createFinancialRecord({
-        patient: formPatient,
-        date: formDate,
-        amount: formAmount,
-        careType: formCareType,
-        status: formCareType === "particular" ? formStatus : undefined,
-        agreementId: formCareType === "convenio" ? formAgreementId : undefined,
-        agreementPlan: formCareType === "convenio" ? formAgreementPlan : undefined,
-        method: formCareType === "particular" ? formMethod : undefined,
-        notes: formNotes,
-      });
-      if (res.success === false) {
-        toast({ title: "Erro ao registrar pagamento", description: res.error.message, variant: "destructive" });
-      } else {
-        setPayments((prev) => [res.data, ...prev]);
-        resetCreateForm();
-        toast({ title: "Pagamento registrado", description: "O registro financeiro foi salvo com sucesso." });
-      }
-    } catch {
-      toast({ title: "Erro ao salvar informacoes", variant: "destructive" });
-    } finally {
-      setIsRegistering(false);
-    }
-  };
-
-  const handleGenerateFinancialPdf = async () => {
-    if (!isAdmin || !hasValidReportRange()) return;
-
-    setIsGeneratingReport(true);
-    try {
-      await generateFinancialPdfReport({
-        patientId: reportPatientId,
-        startDate: reportStartDate,
-        endDate: reportEndDate,
-      });
-      toast({
-        title: "Relatorio financeiro gerado",
-        description: "O PDF financeiro foi gerado com sucesso.",
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Erro ao gerar relatorio financeiro.";
-      toast({ title: "Erro ao gerar PDF", description: message, variant: "destructive" });
-    } finally {
-      setIsGeneratingReport(false);
-    }
-  };
-
-  const handleExportFinancialExcel = async () => {
-    if (!isAdmin || !hasValidReportRange()) return;
-
-    setIsExportingReport(true);
-    try {
-      await generateFinancialExcelReport({
-        patientId: reportPatientId,
-        startDate: reportStartDate,
-        endDate: reportEndDate,
-      });
-      toast({
-        title: "Relatorio financeiro exportado",
-        description: "O arquivo Excel financeiro foi gerado com sucesso.",
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Erro ao gerar relatorio financeiro.";
-      toast({ title: "Erro ao exportar Excel", description: message, variant: "destructive" });
-    } finally {
-      setIsExportingReport(false);
-    }
-  };
-
-  const openEditDialog = (payment: FinancialRecord) => {
-    if (!isAdmin) return;
-    setEditingPayment(payment);
-    setEditPatient(payment.patient);
-    setEditDate(payment.date);
-    setEditAmount(payment.amount.replace(",", ".").replace("R$", "").trim());
-    setEditCareType(payment.careType || "particular");
-    setEditStatus(payment.status);
-    setEditAgreementId(payment.agreementId || "");
-    setEditAgreementPlan(payment.agreementPlan || "");
-    setEditMethod(payment.method || "");
-    setEditNotes(payment.notes || "");
-  };
-
-  const handleSaveEdit = async () => {
-    if (!editingPayment || !isAdmin) return;
-
-    if (!editPatient || !editDate || !editAmount) {
+    const draft = transactionDrafts[patientId];
+    if (!draft?.date || !draft?.amount) {
       toast({
         title: "Campos obrigatorios",
-        description: "Preencha paciente, data e valor.",
+        description: "Preencha data e valor para registrar o lancamento.",
         variant: "destructive",
       });
       return;
     }
-    if (editCareType === "particular" && !editStatus) {
+    if (draft.careType === "particular" && !draft.status) {
       toast({
         title: "Campos obrigatorios",
-        description: "Selecione o status para atendimento particular.",
+        description: "Selecione o status do pagamento para atendimento particular.",
         variant: "destructive",
       });
       return;
     }
-    if (editCareType === "convenio" && (!editAgreementId || !editAgreementPlan)) {
+    if (draft.careType === "convenio" && (!draft.agreementId || !draft.agreementPlan)) {
       toast({
         title: "Campos obrigatorios",
         description: "Selecione convenio e plano para atendimento por convenio.",
@@ -262,451 +287,670 @@ const Financial = () => {
       return;
     }
 
-    setIsSavingEdit(true);
-    const res = await updateFinancialRecord(editingPayment.id, {
-      patient: editPatient,
-      date: editDate,
-      amount: editAmount,
-      careType: editCareType,
-      status: editCareType === "particular" ? editStatus : undefined,
-      agreementId: editCareType === "convenio" ? editAgreementId : undefined,
-      agreementPlan: editCareType === "convenio" ? editAgreementPlan : undefined,
-      method: editCareType === "particular" ? editMethod : undefined,
-      notes: editNotes,
-    });
-    setIsSavingEdit(false);
+    const rawAmount = Number.parseFloat(draft.amount || "0");
+    const absoluteAmount = Math.abs(rawAmount);
+    const normalizedAmount =
+      draft.careType === "particular"
+        ? draft.status === "Pago"
+          ? absoluteAmount
+          : -absoluteAmount
+        : rawAmount;
+    const transactionType =
+      draft.careType === "particular"
+        ? draft.status === "Pago"
+          ? "payment"
+          : "charge"
+        : normalizedAmount >= 0
+          ? "payment"
+          : "charge";
 
-    if (!res.success) {
+    setSubmittingPatientId(patientId);
+    const response = await createPatientFinancialTransaction(patientId, {
+      date: draft.date,
+      amount: normalizedAmount.toFixed(2),
+      careType: draft.careType,
+      status: draft.careType === "particular" ? draft.status : undefined,
+      agreementId: draft.careType === "convenio" ? draft.agreementId : undefined,
+      agreementPlan: draft.careType === "convenio" ? draft.agreementPlan : undefined,
+      method: draft.careType === "particular" ? draft.method : undefined,
+      notes: draft.notes,
+      type: transactionType,
+    });
+    setSubmittingPatientId(null);
+
+    if (!response.success) {
       toast({
-        title: "Erro ao atualizar pagamento",
-        description: res.error.message,
+        title: "Erro ao registrar lancamento",
+        description: response.error.message,
         variant: "destructive",
       });
       return;
     }
 
-    setPayments((prev) => prev.map((item) => (item.id === editingPayment.id ? res.data : item)));
-    setEditingPayment(null);
-    toast({ title: "Pagamento atualizado", description: "As alteracoes financeiras foram aplicadas." });
+    updateTransactionDraft(patientId, {
+      ...INITIAL_TRANSACTION_DRAFT,
+      date: draft.date,
+      careType: draft.careType,
+      status: draft.status,
+      agreementId: draft.careType === "convenio" ? draft.agreementId : "",
+      agreementPlan: draft.careType === "convenio" ? draft.agreementPlan : "",
+    });
+    await refreshPatientDetail(patientId);
+    toast({
+      title: "Lancamento registrado",
+      description: "O historico financeiro do paciente foi atualizado.",
+    });
+  };
+
+  const handleSaveSettings = async (patientId: string) => {
+    if (!isAdmin) {
+      return;
+    }
+    const draft = settingsDrafts[patientId];
+    if (!draft) {
+      return;
+    }
+
+    const price = Number.parseFloat(draft.consultationPrice || "0");
+    if (Number.isNaN(price) || price < 0) {
+      toast({
+        title: "Valor invalido",
+        description: "Informe um valor automatico valido.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setSavingSettingsPatientId(patientId);
+    const response = await updateFinancialPatientSettings(patientId, {
+      autoCharge: draft.autoCharge,
+      consultationPrice: price,
+    });
+    setSavingSettingsPatientId(null);
+
+    if (!response.success) {
+      toast({
+        title: "Erro ao salvar cobranca automatica",
+        description: response.error.message,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    await refreshPatientDetail(patientId);
+    toast({
+      title: "Configuracao salva",
+      description: "A cobranca automatica do paciente foi atualizada.",
+    });
+  };
+
+  const handleExportPdf = async (patientId: string) => {
+    if (!isAdmin) {
+      return;
+    }
+    const period = validatePeriod(patientId);
+    if (!period) {
+      return;
+    }
+
+    setExportingKey(`${patientId}-pdf`);
+    try {
+      await generateFinancialPdfReport({
+        patientId,
+        startDate: period.startDate,
+        endDate: period.endDate,
+      });
+      toast({
+        title: "PDF gerado",
+        description: "Relatorio financeiro exportado com sucesso.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao gerar PDF financeiro.";
+      toast({ title: "Erro ao gerar PDF", description: message, variant: "destructive" });
+    } finally {
+      setExportingKey("");
+    }
+  };
+
+  const handleExportExcel = async (patientId: string) => {
+    if (!isAdmin) {
+      return;
+    }
+    const period = validatePeriod(patientId);
+    if (!period) {
+      return;
+    }
+
+    setExportingKey(`${patientId}-excel`);
+    try {
+      await generateFinancialExcelReport({
+        patientId,
+        startDate: period.startDate,
+        endDate: period.endDate,
+      });
+      toast({
+        title: "Excel exportado",
+        description: "Relatorio financeiro exportado com sucesso.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao exportar Excel financeiro.";
+      toast({ title: "Erro ao exportar Excel", description: message, variant: "destructive" });
+    } finally {
+      setExportingKey("");
+    }
   };
 
   return (
     <div className="space-y-6">
-      {isAdmin ? (
-        <Card className="shadow-card border-border max-w-3xl">
-          <CardHeader>
-            <CardTitle className="text-base font-semibold">Registrar Pagamento</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <form className="space-y-4" onSubmit={handleSubmit}>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Paciente</Label>
-                  <Select value={formPatient} onValueChange={setFormPatient}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecionar paciente" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {patients.map((patient) => (
-                        <SelectItem key={patient.id} value={patient.name}>
-                          {patient.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Data</Label>
-                  <Input type="date" value={formDate} onChange={(event) => setFormDate(event.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Valor</Label>
-                  <Input type="number" placeholder="0,00" step="0.01" value={formAmount} onChange={(event) => setFormAmount(event.target.value)} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Forma de atendimento</Label>
-                  <Select
-                    value={formCareType}
-                    onValueChange={(value) => {
-                      const next = value as "particular" | "convenio";
-                      setFormCareType(next);
-                      if (next === "particular") {
-                        setFormAgreementId("");
-                        setFormAgreementPlan("");
-                      } else {
-                        setFormStatus("");
-                        setFormMethod("");
-                      }
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="particular">Particular</SelectItem>
-                      <SelectItem value="convenio" disabled={activeAgreements.length === 0}>Convenio</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  {activeAgreements.length === 0 && (
-                    <p className="text-xs text-muted-foreground">Nenhum convenio disponivel no momento.</p>
-                  )}
-                </div>
-                <div className="space-y-2">
-                  <Label>Status do Pagamento</Label>
-                  {formCareType === "particular" ? (
-                    <Select value={formStatus} onValueChange={setFormStatus}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Selecionar status" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Pendente">Pendente</SelectItem>
-                        <SelectItem value="Pago">Pago</SelectItem>
-                        <SelectItem value="Atrasado">Atrasado</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <div className="h-10 rounded-md border border-border px-3 text-sm flex items-center text-muted-foreground">
-                      Status automatico: Convenio
-                    </div>
-                  )}
-                </div>
-                {formCareType === "convenio" ? (
-                  <>
-                    <div className="space-y-2">
-                      <Label>Convenio</Label>
-                      <Select value={formAgreementId} onValueChange={(value) => { setFormAgreementId(value); setFormAgreementPlan(""); }}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Selecionar convenio" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {activeAgreements.map((agreement) => (
-                            <SelectItem key={agreement.id} value={agreement.id}>
-                              {agreement.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Plano</Label>
-                      <Select value={formAgreementPlan} onValueChange={setFormAgreementPlan} disabled={!selectedCreateAgreement}>
-                        <SelectTrigger>
-                          <SelectValue placeholder={selectedCreateAgreement ? "Selecionar plano" : "Selecione um convenio"} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {selectedCreatePlans.map((plan) => (
-                            <SelectItem key={plan} value={plan}>
-                              {plan}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </>
-                ) : (
-                  <div className="space-y-2">
-                    <Label>Metodo de pagamento</Label>
-                    <Input value={formMethod} onChange={(event) => setFormMethod(event.target.value)} placeholder="Pix, cartao, dinheiro..." />
-                  </div>
-                )}
-                <div className="space-y-2 md:col-span-2">
-                  <Label>Observacoes</Label>
-                  <Textarea value={formNotes} onChange={(event) => setFormNotes(event.target.value)} rows={3} placeholder="Detalhes do pagamento..." />
-                </div>
-              </div>
-              <div className="flex justify-end">
-                <Button disabled={isRegistering}>
-                  {isRegistering ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Registrando...
-                    </>
-                  ) : (
-                    "Registrar Pagamento"
-                  )}
-                </Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-      ) : (
-        <Card className="shadow-card border-border">
+      {!isAdmin && (
+        <Card className="border-border shadow-card">
           <CardContent className="pt-6">
             <p className="text-sm text-muted-foreground">
-              Voce esta em modo visualizacao. Apenas administradores podem registrar, editar ou exportar dados financeiros.
+              Voce esta em modo visualizacao. Apenas administradores podem registrar pagamentos, editar cobranca automatica e exportar.
             </p>
           </CardContent>
         </Card>
       )}
 
-      {isAdmin && (
-        <Card className="shadow-card border-border max-w-4xl">
-          <CardHeader>
-            <CardTitle className="text-base font-semibold">Relatorio Financeiro</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label>Selecionar Paciente</Label>
-              <Select value={reportPatientId} onValueChange={setReportPatientId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione um paciente" />
-                </SelectTrigger>
-                <SelectContent>
-                  {patients.map((patient) => (
-                    <SelectItem key={patient.id} value={patient.id}>
-                      {patient.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Data inicial</Label>
-                <Input type="date" value={reportStartDate} onChange={(event) => setReportStartDate(event.target.value)} />
-              </div>
-              <div className="space-y-2">
-                <Label>Data final</Label>
-                <Input type="date" value={reportEndDate} onChange={(event) => setReportEndDate(event.target.value)} />
-              </div>
-            </div>
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <Button onClick={handleGenerateFinancialPdf} disabled={isGeneratingReport} className="w-full sm:w-auto">
-                {isGeneratingReport ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Gerando...
-                  </>
-                ) : (
-                  <>
-                    <FileText className="h-4 w-4 mr-2" />
-                    Gerar PDF Financeiro
-                  </>
-                )}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={handleExportFinancialExcel}
-                disabled={isExportingReport}
-                className="w-full sm:w-auto"
-              >
-                {isExportingReport ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Exportando...
-                  </>
-                ) : (
-                  <>
-                    <Download className="h-4 w-4 mr-2" />
-                    Exportar para Excel
-                  </>
-                )}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      <Card className="shadow-card border-border">
+      <Card className="border-border shadow-card">
         <CardHeader>
-          <CardTitle className="text-base font-semibold">Historico de Pagamentos</CardTitle>
+          <CardTitle className="text-base font-semibold">Central Financeira por Paciente</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           {isLoading ? (
-            <TableSkeleton
-              columns={isAdmin ? 7 : 6}
-              rows={5}
-              headers={isAdmin ? ["Paciente", "Data", "Valor", "Status", "Atendimento", "Registrado Em", "Acoes"] : ["Paciente", "Data", "Valor", "Status", "Atendimento", "Registrado Em"]}
-            />
+            <div className="p-6">
+              <TableSkeleton columns={4} rows={6} headers={["Paciente", "Saldo", "Pendente", "Atrasado"]} />
+            </div>
           ) : loadError ? (
-            <EmptyState icon={DollarSign} title="Erro ao carregar dados" description={loadError} />
-          ) : payments.length === 0 ? (
-            <EmptyState icon={DollarSign} title="Nenhum pagamento registrado" description="Nao ha movimentacoes financeiras para exibir." />
+            <EmptyState icon={FileText} title="Erro ao carregar financeiro" description={loadError} />
+          ) : patients.length === 0 ? (
+            <EmptyState
+              icon={FileText}
+              title="Nenhum paciente cadastrado"
+              description="Cadastre pacientes para iniciar o controle financeiro."
+            />
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/50 hover:bg-muted/50">
-                  <TableHead className="text-xs uppercase tracking-wider font-medium">Paciente</TableHead>
-                  <TableHead className="text-xs uppercase tracking-wider font-medium">Data</TableHead>
-                  <TableHead className="text-xs uppercase tracking-wider font-medium">Valor</TableHead>
-                  <TableHead className="text-xs uppercase tracking-wider font-medium">Status</TableHead>
-                  <TableHead className="text-xs uppercase tracking-wider font-medium">Atendimento</TableHead>
-                  <TableHead className="text-xs uppercase tracking-wider font-medium">Registrado Em</TableHead>
-                  {isAdmin && <TableHead className="text-xs uppercase tracking-wider font-medium text-right">Acoes</TableHead>}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {payments.map((payment) => (
-                  <TableRow key={payment.id} className="hover:bg-muted/30 transition-colors">
-                    <TableCell className="font-medium">{payment.patient}</TableCell>
-                    <TableCell className="tabular-nums text-muted-foreground">{payment.date}</TableCell>
-                    <TableCell className="font-semibold tabular-nums">{payment.amount}</TableCell>
-                    <TableCell>
-                      {payment.careType === "convenio" ? (
-                        <Badge className="bg-primary/10 text-primary border-primary/30">Convenio</Badge>
+            <Accordion
+              type="single"
+              collapsible
+              value={openPatientId}
+              onValueChange={(value) => {
+                setOpenPatientId(value);
+                if (value) {
+                  void ensurePatientDetailLoaded(value);
+                }
+              }}
+              className="w-full"
+            >
+              {patients.map((patient) => {
+                const detail = detailByPatientId[patient.id];
+                const transactionDraft = transactionDrafts[patient.id] || INITIAL_TRANSACTION_DRAFT;
+                const settingsDraft = settingsDrafts[patient.id];
+                const reportDraft = reportDrafts[patient.id];
+                const selectedAgreement = activeAgreements.find(
+                  (agreement) => agreement.id === transactionDraft.agreementId
+                );
+                const selectedPlans = selectedAgreement?.plans || [];
+                const isDetailLoading = loadingPatientId === patient.id;
+
+                return (
+                  <AccordionItem key={patient.id} value={patient.id} className="border-border">
+                    <AccordionTrigger className="px-4 sm:px-6 hover:no-underline">
+                      <div className="grid w-full grid-cols-1 gap-2 text-left sm:grid-cols-4 sm:items-center">
+                        <span className="font-medium">{patient.name}</span>
+                        <span
+                          className={`text-sm font-semibold ${
+                            patient.summary.balance < 0 ? "text-destructive" : "text-success"
+                          }`}
+                        >
+                          Saldo: {formatCurrency(patient.summary.balance)}
+                        </span>
+                        <span className="text-sm text-muted-foreground">
+                          Pendente: {formatCurrency(patient.summary.totalPending)}
+                        </span>
+                        <span className="text-sm text-muted-foreground">
+                          Lancamentos: {patient.transactionsCount}
+                        </span>
+                      </div>
+                    </AccordionTrigger>
+
+                    <AccordionContent className="px-4 pb-6 sm:px-6">
+                      {isDetailLoading || !detail ? (
+                        <div className="space-y-3">
+                          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                          <p className="text-sm text-muted-foreground">Carregando dados financeiros do paciente...</p>
+                        </div>
                       ) : (
-                        <StatusBadge status={payment.status} />
+                        <div className="space-y-6">
+                          <div className="grid grid-cols-1 gap-3 md:grid-cols-3 xl:grid-cols-6">
+                            <Card className="border-border">
+                              <CardContent className="pt-4">
+                                <p className="text-xs text-muted-foreground">Saldo atual</p>
+                                <p
+                                  className={`mt-1 text-base font-semibold ${
+                                    detail.summary.balance < 0 ? "text-destructive" : "text-success"
+                                  }`}
+                                >
+                                  {formatCurrency(detail.summary.balance)}
+                                </p>
+                              </CardContent>
+                            </Card>
+                            <Card className="border-border">
+                              <CardContent className="pt-4">
+                                <p className="text-xs text-muted-foreground">Total pago</p>
+                                <p className="mt-1 text-base font-semibold">{formatCurrency(detail.summary.totalPaid)}</p>
+                              </CardContent>
+                            </Card>
+                            <Card className="border-border">
+                              <CardContent className="pt-4">
+                                <p className="text-xs text-muted-foreground">Pendente</p>
+                                <p className="mt-1 text-base font-semibold">{formatCurrency(detail.summary.totalPending)}</p>
+                              </CardContent>
+                            </Card>
+                            <Card className="border-border">
+                              <CardContent className="pt-4">
+                                <p className="text-xs text-muted-foreground">Atrasado</p>
+                                <p className="mt-1 text-base font-semibold">{formatCurrency(detail.summary.totalOverdue)}</p>
+                              </CardContent>
+                            </Card>
+                            <Card className="border-border">
+                              <CardContent className="pt-4">
+                                <p className="text-xs text-muted-foreground">Total convenio</p>
+                                <p className="mt-1 text-base font-semibold">{formatCurrency(detail.summary.totalConvenio)}</p>
+                              </CardContent>
+                            </Card>
+                            <Card className="border-border">
+                              <CardContent className="pt-4">
+                                <p className="text-xs text-muted-foreground">Total particular</p>
+                                <p className="mt-1 text-base font-semibold">{formatCurrency(detail.summary.totalParticular)}</p>
+                              </CardContent>
+                            </Card>
+                          </div>
+
+                          <Card className="border-border">
+                            <CardHeader>
+                              <CardTitle className="text-sm font-semibold">Cobranca automatica</CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-4">
+                              <div className="flex items-center justify-between rounded-md border border-border p-3">
+                                <div>
+                                  <p className="text-sm font-medium">Ativar cobranca por agendamento</p>
+                                  <p className="text-xs text-muted-foreground">
+                                    Quando ativo, consultas particulares geram divida automatica.
+                                  </p>
+                                </div>
+                                <Switch
+                                  checked={settingsDraft?.autoCharge || false}
+                                  disabled={!isAdmin}
+                                  onCheckedChange={(checked) =>
+                                    updateSettingsDraft(patient.id, { autoCharge: checked })
+                                  }
+                                />
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label>Valor automatico da consulta</Label>
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  step="0.01"
+                                  value={settingsDraft?.consultationPrice || "0"}
+                                  disabled={!isAdmin || !(settingsDraft?.autoCharge || false)}
+                                  onChange={(event) =>
+                                    updateSettingsDraft(patient.id, { consultationPrice: event.target.value })
+                                  }
+                                />
+                              </div>
+
+                              {isAdmin && (
+                                <div className="flex justify-end">
+                                  <Button
+                                    onClick={() => void handleSaveSettings(patient.id)}
+                                    disabled={savingSettingsPatientId === patient.id}
+                                  >
+                                    {savingSettingsPatientId === patient.id ? (
+                                      <>
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        Salvando...
+                                      </>
+                                    ) : (
+                                      "Salvar cobranca automatica"
+                                    )}
+                                  </Button>
+                                </div>
+                              )}
+                            </CardContent>
+                          </Card>
+
+                          {isAdmin && (
+                            <Card className="border-border">
+                              <CardHeader>
+                                <CardTitle className="text-sm font-semibold">Registrar Pagamento</CardTitle>
+                              </CardHeader>
+                              <CardContent className="space-y-4">
+                                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                                  <div className="space-y-2">
+                                    <Label>Valor</Label>
+                                    <Input
+                                      type="number"
+                                      step="0.01"
+                                      value={transactionDraft.amount}
+                                      onChange={(event) =>
+                                        updateTransactionDraft(patient.id, { amount: event.target.value })
+                                      }
+                                      placeholder="Ex: 120.00"
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label>Data</Label>
+                                    <Input
+                                      type="date"
+                                      value={transactionDraft.date}
+                                      onChange={(event) =>
+                                        updateTransactionDraft(patient.id, { date: event.target.value })
+                                      }
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label>Tipo de atendimento</Label>
+                                    <Select
+                                      value={transactionDraft.careType}
+                                      onValueChange={(value) => {
+                                        const next = value as "particular" | "convenio";
+                                        updateTransactionDraft(patient.id, {
+                                          careType: next,
+                                          agreementId: next === "convenio" ? transactionDraft.agreementId : "",
+                                          agreementPlan: next === "convenio" ? transactionDraft.agreementPlan : "",
+                                        });
+                                      }}
+                                    >
+                                      <SelectTrigger>
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="particular">Particular</SelectItem>
+                                        <SelectItem value="convenio" disabled={activeAgreements.length === 0}>
+                                          Convenio
+                                        </SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+
+                                {transactionDraft.careType === "convenio" ? (
+                                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                                    <div className="space-y-2">
+                                      <Label>Convenio</Label>
+                                      <Select
+                                        value={transactionDraft.agreementId}
+                                        onValueChange={(value) =>
+                                          updateTransactionDraft(patient.id, {
+                                            agreementId: value,
+                                            agreementPlan: "",
+                                          })
+                                        }
+                                      >
+                                        <SelectTrigger>
+                                          <SelectValue placeholder="Selecionar convenio" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          {activeAgreements.map((agreement) => (
+                                            <SelectItem key={agreement.id} value={agreement.id}>
+                                              {agreement.name}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                      <Label>Plano</Label>
+                                      <Select
+                                        value={transactionDraft.agreementPlan}
+                                        onValueChange={(value) =>
+                                          updateTransactionDraft(patient.id, { agreementPlan: value })
+                                        }
+                                        disabled={!transactionDraft.agreementId}
+                                      >
+                                        <SelectTrigger>
+                                          <SelectValue
+                                            placeholder={
+                                              transactionDraft.agreementId
+                                                ? "Selecionar plano"
+                                                : "Selecione um convenio"
+                                            }
+                                          />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          {selectedPlans.map((plan) => (
+                                            <SelectItem key={plan} value={plan}>
+                                              {plan}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                      <Label>Status do pagamento</Label>
+                                      <div className="h-10 rounded-md border border-border px-3 flex items-center">
+                                        <Badge className="bg-primary/10 text-primary border-primary/30">Convenio</Badge>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                      <Label>Status do pagamento</Label>
+                                      <Select
+                                        value={transactionDraft.status}
+                                        onValueChange={(value) =>
+                                          updateTransactionDraft(patient.id, {
+                                            status: value as "Pago" | "Pendente" | "Atrasado",
+                                          })
+                                        }
+                                      >
+                                        <SelectTrigger>
+                                          <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          <SelectItem value="Pago">Pago</SelectItem>
+                                          <SelectItem value="Pendente">Pendente</SelectItem>
+                                          <SelectItem value="Atrasado">Atrasado</SelectItem>
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                    <div className="space-y-2">
+                                      <Label>Metodo de pagamento</Label>
+                                      <Input
+                                        value={transactionDraft.method}
+                                        onChange={(event) =>
+                                          updateTransactionDraft(patient.id, { method: event.target.value })
+                                        }
+                                        placeholder="Pix, cartao, dinheiro..."
+                                      />
+                                    </div>
+                                  </div>
+                                )}
+
+                                <div className="space-y-2">
+                                  <Label>Observacao</Label>
+                                  <Textarea
+                                    value={transactionDraft.notes}
+                                    onChange={(event) =>
+                                      updateTransactionDraft(patient.id, { notes: event.target.value })
+                                    }
+                                    rows={3}
+                                    placeholder="Detalhes do registro financeiro..."
+                                  />
+                                </div>
+
+                                <div className="flex justify-end">
+                                  <Button
+                                    onClick={() => void handleRegisterTransaction(patient.id)}
+                                    disabled={submittingPatientId === patient.id}
+                                  >
+                                    {submittingPatientId === patient.id ? (
+                                      <>
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        Salvando...
+                                      </>
+                                    ) : (
+                                      "Registrar Pagamento"
+                                    )}
+                                  </Button>
+                                </div>
+                              </CardContent>
+                            </Card>
+                          )}
+
+                          <Card className="border-border">
+                            <CardHeader>
+                              <CardTitle className="text-sm font-semibold">Historico Financeiro do Paciente</CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-4 p-0">
+                              <div className="overflow-x-auto">
+                                <Table>
+                                  <TableHeader>
+                                    <TableRow className="bg-muted/50 hover:bg-muted/50">
+                                      <TableHead>Data</TableHead>
+                                      <TableHead>Valor</TableHead>
+                                      <TableHead>Tipo</TableHead>
+                                      <TableHead>Atendimento</TableHead>
+                                      <TableHead>Status</TableHead>
+                                      <TableHead>Metodo de pagamento</TableHead>
+                                      <TableHead>Convenio</TableHead>
+                                      <TableHead>Plano</TableHead>
+                                      <TableHead>Observacoes</TableHead>
+                                      <TableHead>Data do registro</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {detail.transactions.length === 0 ? (
+                                      <TableRow>
+                                        <TableCell colSpan={10} className="text-center text-muted-foreground">
+                                          Nenhum lancamento financeiro para este paciente.
+                                        </TableCell>
+                                      </TableRow>
+                                    ) : (
+                                      detail.transactions.map((transaction) => (
+                                        <TableRow key={transaction.id} className="hover:bg-muted/30">
+                                          <TableCell>{transaction.date}</TableCell>
+                                          <TableCell
+                                            className={
+                                              Number.parseFloat(transaction.amount) < 0
+                                                ? "font-semibold text-destructive"
+                                                : "font-semibold"
+                                            }
+                                          >
+                                            {formatCurrency(Number.parseFloat(transaction.amount || "0"))}
+                                          </TableCell>
+                                          <TableCell className="uppercase text-xs text-muted-foreground">
+                                            {formatTransactionType(transaction.type)}
+                                          </TableCell>
+                                          <TableCell>
+                                            {transaction.careType === "convenio" ? "Convenio" : "Particular"}
+                                          </TableCell>
+                                          <TableCell>
+                                            {transaction.careType === "convenio" ? (
+                                              <Badge className="bg-primary/10 text-primary border-primary/30">Convenio</Badge>
+                                            ) : (
+                                              <StatusBadge status={transaction.status} />
+                                            )}
+                                          </TableCell>
+                                          <TableCell>{transaction.method || "-"}</TableCell>
+                                          <TableCell>
+                                            {transaction.careType === "convenio"
+                                              ? transaction.agreementName || "Convenio"
+                                              : "-"}
+                                          </TableCell>
+                                          <TableCell>
+                                            {transaction.careType === "convenio"
+                                              ? transaction.agreementPlan || "-"
+                                              : "-"}
+                                          </TableCell>
+                                          <TableCell>{transaction.notes || "-"}</TableCell>
+                                          <TableCell>{formatRegisteredAt(transaction.registeredAt)}</TableCell>
+                                        </TableRow>
+                                      ))
+                                    )}
+                                  </TableBody>
+                                </Table>
+                              </div>
+
+                              {isAdmin && (
+                                <div className="grid grid-cols-1 gap-4 border-t border-border px-4 pb-4 pt-4 md:grid-cols-2 lg:grid-cols-5">
+                                  <div className="space-y-2">
+                                    <Label>Data inicial</Label>
+                                    <Input
+                                      type="date"
+                                      value={reportDraft?.startDate || ""}
+                                      onChange={(event) =>
+                                        updateReportDraft(patient.id, { startDate: event.target.value })
+                                      }
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label>Data final</Label>
+                                    <Input
+                                      type="date"
+                                      value={reportDraft?.endDate || ""}
+                                      onChange={(event) =>
+                                        updateReportDraft(patient.id, { endDate: event.target.value })
+                                      }
+                                    />
+                                  </div>
+                                  <div className="flex items-end">
+                                    <Button
+                                      className="w-full"
+                                      onClick={() => void handleExportPdf(patient.id)}
+                                      disabled={exportingKey === `${patient.id}-pdf`}
+                                    >
+                                      {exportingKey === `${patient.id}-pdf` ? (
+                                        <>
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          Gerando...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <FileText className="mr-2 h-4 w-4" />
+                                          PDF
+                                        </>
+                                      )}
+                                    </Button>
+                                  </div>
+                                  <div className="flex items-end">
+                                    <Button
+                                      variant="outline"
+                                      className="w-full"
+                                      onClick={() => void handleExportExcel(patient.id)}
+                                      disabled={exportingKey === `${patient.id}-excel`}
+                                    >
+                                      {exportingKey === `${patient.id}-excel` ? (
+                                        <>
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          Exportando...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Download className="mr-2 h-4 w-4" />
+                                          Excel
+                                        </>
+                                      )}
+                                    </Button>
+                                  </div>
+                                </div>
+                              )}
+                            </CardContent>
+                          </Card>
+                        </div>
                       )}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
-                      {payment.careType === "convenio"
-                        ? `${payment.agreementName || "Convenio"}${payment.agreementPlan ? ` - ${payment.agreementPlan}` : ""}`
-                        : "Particular"}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground text-sm">{payment.registeredAt}</TableCell>
-                    {isAdmin && (
-                      <TableCell className="text-right">
-                        <Button size="sm" variant="outline" onClick={() => openEditDialog(payment)}>
-                          Editar
-                        </Button>
-                      </TableCell>
-                    )}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                    </AccordionContent>
+                  </AccordionItem>
+                );
+              })}
+            </Accordion>
           )}
         </CardContent>
       </Card>
-
-      <Dialog open={!!editingPayment} onOpenChange={(open) => !open && setEditingPayment(null)}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Editar pagamento</DialogTitle>
-            <DialogDescription>Ajuste os dados financeiros e o status do pagamento.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Paciente</Label>
-              <Select value={editPatient} onValueChange={setEditPatient}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecionar paciente" />
-                </SelectTrigger>
-                <SelectContent>
-                  {patients.map((patient) => (
-                    <SelectItem key={patient.id} value={patient.name}>
-                      {patient.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Data</Label>
-                <Input type="date" value={editDate} onChange={(event) => setEditDate(event.target.value)} />
-              </div>
-              <div className="space-y-2">
-                <Label>Valor</Label>
-                <Input type="number" step="0.01" value={editAmount} onChange={(event) => setEditAmount(event.target.value)} />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>Forma de atendimento</Label>
-              <Select
-                value={editCareType}
-                onValueChange={(value) => {
-                  const next = value as "particular" | "convenio";
-                  setEditCareType(next);
-                  if (next === "particular") {
-                    setEditAgreementId("");
-                    setEditAgreementPlan("");
-                  } else {
-                    setEditMethod("");
-                    setEditStatus("");
-                  }
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="particular">Particular</SelectItem>
-                  <SelectItem value="convenio" disabled={activeAgreements.length === 0}>Convenio</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {editCareType === "convenio" && (
-              <>
-                <div className="space-y-2">
-                  <Label>Convenio</Label>
-                  <Select value={editAgreementId} onValueChange={(value) => { setEditAgreementId(value); setEditAgreementPlan(""); }}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecionar convenio" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {activeAgreements.map((agreement) => (
-                        <SelectItem key={agreement.id} value={agreement.id}>
-                          {agreement.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Plano</Label>
-                  <Select value={editAgreementPlan} onValueChange={setEditAgreementPlan} disabled={!selectedEditAgreement}>
-                    <SelectTrigger>
-                      <SelectValue placeholder={selectedEditAgreement ? "Selecionar plano" : "Selecione um convenio"} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {selectedEditPlans.map((plan) => (
-                        <SelectItem key={plan} value={plan}>
-                          {plan}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </>
-            )}
-            <div className="space-y-2">
-              <Label>Status</Label>
-              {editCareType === "particular" ? (
-                <Select value={editStatus} onValueChange={setEditStatus}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Pendente">Pendente</SelectItem>
-                    <SelectItem value="Pago">Pago</SelectItem>
-                    <SelectItem value="Atrasado">Atrasado</SelectItem>
-                  </SelectContent>
-                </Select>
-              ) : (
-                <div className="h-10 rounded-md border border-border px-3 text-sm flex items-center text-muted-foreground">
-                  Status automatico: Convenio
-                </div>
-              )}
-            </div>
-            {editCareType === "particular" && (
-              <div className="space-y-2">
-                <Label>Metodo de pagamento</Label>
-                <Input value={editMethod} onChange={(event) => setEditMethod(event.target.value)} />
-              </div>
-            )}
-            <div className="space-y-2">
-              <Label>Observacoes</Label>
-              <Textarea value={editNotes} onChange={(event) => setEditNotes(event.target.value)} rows={3} />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditingPayment(null)} disabled={isSavingEdit}>
-              Cancelar
-            </Button>
-            <Button onClick={handleSaveEdit} disabled={isSavingEdit}>
-              {isSavingEdit ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Salvando...
-                </>
-              ) : (
-                "Salvar alteracoes"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 };

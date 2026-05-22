@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  addDaysToDateKey,
   getAppointmentRenderData,
   roundTimeToFiveMinutes,
 } from "@/components/scheduling/calendar/calendarUtils";
@@ -29,5 +30,12 @@ describe("calendarUtils", () => {
     expect(render.top).toBeCloseTo(13, 0);
     expect(render.height).toBe(52);
   });
-});
 
+  it("creates recurring dates always from selected base date forward", () => {
+    const baseDate = "2026-05-21";
+    expect(addDaysToDateKey(baseDate, 0)).toBe("2026-05-21");
+    expect(addDaysToDateKey(baseDate, 1)).toBe("2026-05-22");
+    expect(addDaysToDateKey(baseDate, 2)).toBe("2026-05-23");
+    expect(addDaysToDateKey(baseDate, 4)).toBe("2026-05-25");
+  });
+});

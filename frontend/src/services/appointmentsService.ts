@@ -2,6 +2,7 @@ import { api, type ApiResponse } from "./api";
 
 export interface Appointment {
   id: string;
+  patientId?: string | null;
   patient: string;
   date: string;
   time: string;

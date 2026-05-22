@@ -104,6 +104,26 @@ def init_db():
     _ensure_column(db, "financeiro", "convenio_id", "convenio_id TEXT")
     _ensure_column(db, "financeiro", "convenio_nome", "convenio_nome TEXT")
     _ensure_column(db, "financeiro", "plano_convenio", "plano_convenio TEXT")
+    _ensure_column(db, "financeiro", "transaction_type", "transaction_type TEXT NOT NULL DEFAULT 'payment'")
+    _ensure_column(db, "financeiro", "source", "source TEXT NOT NULL DEFAULT 'manual'")
+    _ensure_column(db, "financeiro", "appointment_id", "appointment_id TEXT")
+    _ensure_column(db, "financeiro", "updated_at", "updated_at TEXT")
+
+    _ensure_column(db, "registros", "anexos", "anexos TEXT")
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS financial_settings (
+            id TEXT PRIMARY KEY,
+            patient_id TEXT NOT NULL UNIQUE,
+            auto_charge INTEGER NOT NULL DEFAULT 0,
+            consultation_price REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (patient_id) REFERENCES pacientes(id) ON DELETE CASCADE
+        )
+        """
+    )
 
     db.execute("CREATE INDEX IF NOT EXISTS idx_professionals_email ON professionals(email)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_agenda_professional_id ON agenda(professional_id)")
@@ -111,6 +131,10 @@ def init_db():
     db.execute("CREATE INDEX IF NOT EXISTS idx_pacientes_forma_atendimento ON pacientes(forma_atendimento)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_agenda_forma_atendimento ON agenda(forma_atendimento)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_financeiro_forma_atendimento ON financeiro(forma_atendimento)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_financeiro_paciente_data ON financeiro(paciente_id, data)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_financeiro_appointment_id ON financeiro(appointment_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_financeiro_source ON financeiro(source)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_financial_settings_patient_id ON financial_settings(patient_id)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_convenios_status ON convenios(status)")
 
     _seed_default_admin(db)

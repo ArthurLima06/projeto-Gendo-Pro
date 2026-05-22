@@ -7,6 +7,7 @@ interface EventPreviewCardProps {
   appointment: Appointment;
   position: { x: number; y: number };
   durationMinutes: number;
+  onOpenRecord: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onMouseEnter: () => void;
@@ -31,6 +32,7 @@ const EventPreviewCard = ({
   appointment,
   position,
   durationMinutes,
+  onOpenRecord,
   onEdit,
   onDelete,
   onMouseEnter,
@@ -86,6 +88,9 @@ const EventPreviewCard = ({
       </div>
 
       <div className="mt-4 flex justify-end gap-2">
+        <Button size="sm" variant="secondary" className="gap-1.5" onClick={onOpenRecord}>
+          Prontuario
+        </Button>
         <Button size="sm" variant="outline" className="gap-1.5" onClick={onEdit}>
           <Pencil className="h-3.5 w-3.5" />
           Editar

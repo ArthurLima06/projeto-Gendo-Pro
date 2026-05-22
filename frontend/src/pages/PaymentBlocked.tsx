@@ -30,7 +30,7 @@ const PaymentBlocked = () => {
         <Card className="shadow-elevated border-border">
           <CardContent className="pt-8 pb-8 px-8">
             <div className="flex justify-center mb-6">
-              <img src={gendoLogo} alt="Gendo Pro" className="h-16 w-16 object-contain" />
+              <img src={gendoLogo} alt="GridTime" className="h-16 w-16 object-contain" />
             </div>
 
             <div className="flex justify-center mb-4">
@@ -84,7 +84,7 @@ const PaymentBlocked = () => {
 
             <p className="text-center text-sm text-muted-foreground mt-6">
               Precisa de ajuda?{" "}
-              <a href="mailto:suporte@gendopro.com" className="text-primary font-medium hover:underline">
+              <a href="mailto:suporte@gridtime.com" className="text-primary font-medium hover:underline">
                 Fale conosco
               </a>
             </p>

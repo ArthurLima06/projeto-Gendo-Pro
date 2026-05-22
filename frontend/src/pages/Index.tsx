@@ -64,12 +64,12 @@ const Index = () => {
           </>
         ) : error ? (
           <>
-            <h2 className="text-2xl font-semibold">Bem-vindo ao Gendo Pro.</h2>
+            <h2 className="text-2xl font-semibold">Bem-vindo ao GridTime.</h2>
             <p className="text-sm text-destructive mt-1">{error}</p>
           </>
         ) : (
           <>
-            <h2 className="text-2xl font-semibold">Bem-vindo de volta ao Gendo Pro.</h2>
+            <h2 className="text-2xl font-semibold">Bem-vindo de volta ao GridTime.</h2>
             <p className="text-muted-foreground mt-1">
               {summary || "Nenhum dado disponível no momento."}
             </p>

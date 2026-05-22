@@ -174,7 +174,21 @@ export function buildMonthPeriodLabel(refDate: Date) {
   return `${MONTH_NAMES[refDate.getMonth()]} ${refDate.getFullYear()}`;
 }
 
+export function buildDayPeriodLabel(refDate: Date) {
+  return refDate.toLocaleDateString("pt-BR", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).replace(".", "");
+}
+
+export function addDaysToDateKey(dateKey: string, offsetDays: number) {
+  const date = new Date(`${dateKey}T12:00:00`);
+  date.setDate(date.getDate() + offsetDays);
+  return fmtDateKey(date);
+}
+
 export function formatDatePtBr(dateKey: string) {
   return new Date(`${dateKey}T12:00:00`).toLocaleDateString("pt-BR");
 }
-

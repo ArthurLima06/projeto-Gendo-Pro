@@ -27,6 +27,7 @@ interface CalendarGridProps {
   weekDays: Date[];
   appointmentsByDate: Record<string, AppointmentRenderData[]>;
   selectedAppointmentId: string | null;
+  emptyStateDescription?: string;
   onEventClick: (appointment: Appointment) => void;
   onEmptyCellClick: (date: string, hour: number, minute: number) => void;
   onDropAppointment: (appointmentId: string, date: string, hour: number, minute: number) => void;
@@ -120,6 +121,7 @@ const CalendarGrid = ({
   weekDays,
   appointmentsByDate,
   selectedAppointmentId,
+  emptyStateDescription,
   onEventClick,
   onEmptyCellClick,
   onDropAppointment,
@@ -127,6 +129,8 @@ const CalendarGrid = ({
   onHoverEnd,
   onStartResize,
 }: CalendarGridProps) => {
+  const dayColumns = Math.max(1, weekDays.length);
+  const minGridWidth = Math.max(320, 60 + dayColumns * 96);
   const [draggingAppointment, setDraggingAppointment] = useState<Appointment | null>(null);
   const [currentTime, setCurrentTime] = useState(getCurrentTimePosition());
   const [scrollbarCompensation, setScrollbarCompensation] = useState(0);
@@ -224,10 +228,13 @@ const CalendarGrid = ({
       onDragCancel={() => setDraggingAppointment(null)}
     >
       <div className="h-full overflow-x-auto">
-        <div className="min-w-[740px] h-full min-h-[620px] flex flex-col">
+        <div className="h-full min-h-[620px] flex flex-col" style={{ minWidth: `${minGridWidth}px` }}>
           <div
-            className="grid grid-cols-[60px_repeat(7,1fr)] border-b border-border"
-            style={{ paddingRight: `${scrollbarCompensation}px` }}
+            className="grid border-b border-border"
+            style={{
+              paddingRight: `${scrollbarCompensation}px`,
+              gridTemplateColumns: `60px repeat(${dayColumns}, minmax(0, 1fr))`,
+            }}
           >
             <div className="p-2" />
             {weekDays.map((day, index) => (
@@ -247,7 +254,11 @@ const CalendarGrid = ({
             className="flex-1 min-h-0 overflow-y-auto [scrollbar-gutter:stable]"
           >
             {HOURS.map((hour) => (
-              <div key={hour} className="grid grid-cols-[60px_repeat(7,1fr)] border-b border-border last:border-0">
+              <div
+                key={hour}
+                className="grid border-b border-border last:border-0"
+                style={{ gridTemplateColumns: `60px repeat(${dayColumns}, minmax(0, 1fr))` }}
+              >
                 <div className="p-2 pr-3 text-right">
                   <span className="tabular-nums text-xs text-muted-foreground">
                     {String(hour).padStart(2, "0")}:00
@@ -329,7 +340,7 @@ const CalendarGrid = ({
                 <EmptyState
                   icon={CalendarDays}
                   title="Nenhum agendamento encontrado"
-                  description="Nenhuma consulta agendada para esta semana."
+                  description={emptyStateDescription || "Nenhuma consulta agendada para este periodo."}
                 />
               </div>
             )}

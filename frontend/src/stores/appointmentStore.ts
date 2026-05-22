@@ -24,7 +24,7 @@ interface AppointmentStore {
   error: string;
   selectedDate: string | null;
   fetchAppointments: () => Promise<void>;
-  addAppointment: (appt: CreateAppointmentPayload) => Promise<Appointment | null>;
+  addAppointment: (appt: CreateAppointmentPayload) => Promise<ApiResponse<Appointment>>;
   updateAppointment: (id: string, appt: UpdateAppointmentPayload) => Promise<ApiResponse<Appointment>>;
   removeAppointment: (id: string) => Promise<void>;
   setSelectedDate: (date: string | null) => void;
@@ -62,9 +62,9 @@ export const useAppointmentStore = create<AppointmentStore>((set, get) => ({
       set((s) => ({
         appointments: [...s.appointments, nextAppointment],
       }));
-      return nextAppointment;
+      return { success: true, data: nextAppointment };
     }
-    return null;
+    return res;
   },
 
   updateAppointment: async (id, appt) => {

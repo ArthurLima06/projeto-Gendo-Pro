@@ -38,7 +38,7 @@ def create_app():
         static_url_path="",
     )
     app.logger.setLevel(logging.INFO)
-    app.logger.info("Initializing Gendo Pro API at %s", datetime.utcnow().isoformat())
+    app.logger.info("Initializing GridTime API at %s", datetime.utcnow().isoformat())
 
     app.config.from_mapping(
         DATABASE=str(DATABASE_DIR / "database.db"),
@@ -223,6 +223,24 @@ def create_app():
             abort(400, description="duration precisa ser numérico.")
         return clamp_duration_minutes(minutes)
 
+    def parse_appointment_date(value):
+        if is_blank(value):
+            abort(400, description="date e obrigatorio.")
+        try:
+            parsed = datetime.strptime(str(value).strip(), "%Y-%m-%d")
+        except (TypeError, ValueError):
+            abort(400, description="date invalido. Use o formato YYYY-MM-DD.")
+        return parsed.strftime("%Y-%m-%d")
+
+    def parse_appointment_time(value):
+        if is_blank(value):
+            abort(400, description="time e obrigatorio.")
+        try:
+            parsed = datetime.strptime(str(value).strip(), "%H:%M")
+        except (TypeError, ValueError):
+            abort(400, description="time invalido. Use o formato HH:MM.")
+        return parsed.strftime("%H:%M")
+
     def validate_email(email):
         if is_blank(email):
             abort(400, description="email e obrigatorio.")
@@ -344,7 +362,7 @@ def create_app():
         )
         if professional:
             return professional["id"], professional["name"]
-        return None, typed_value
+        abort(400, description="Profissional nao encontrado.")
 
     def create_auth_session(db, professional_id):
         raw_token = secrets.token_urlsafe(48)
@@ -1667,6 +1685,8 @@ def create_app():
         patient = find_patient_by_name(db, data.get("patient"))
         if patient is None:
             abort(400, description="Paciente nÃ£o encontrado.")
+        normalized_date = parse_appointment_date(data.get("date"))
+        normalized_time = parse_appointment_time(data.get("time"))
         duration_minutes = parse_duration_minutes(data.get("duration"))
         professional_id, professional_name = resolve_professional_for_appointment(db, data)
         care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
@@ -1677,7 +1697,7 @@ def create_app():
             require_active=True,
         )
 
-        if (not is_blank(professional_id) or not is_blank(professional_name)) and not is_blank(data.get("date")) and not is_blank(data.get("time")):
+        if (not is_blank(professional_id) or not is_blank(professional_name)) and not is_blank(normalized_date) and not is_blank(normalized_time):
             if not is_blank(professional_id):
                 conflict_row = db.execute(
                     """
@@ -1688,7 +1708,7 @@ def create_app():
                       AND horario = ?
                     LIMIT 1
                     """,
-                    (professional_id, data.get("date"), data.get("time")),
+                    (professional_id, normalized_date, normalized_time),
                 ).fetchone()
             else:
                 conflict_row = db.execute(
@@ -1700,7 +1720,7 @@ def create_app():
                       AND horario = ?
                     LIMIT 1
                     """,
-                    (professional_name, data.get("date"), data.get("time")),
+                    (professional_name, normalized_date, normalized_time),
                 ).fetchone()
             if conflict_row is not None:
                 return (
@@ -1727,8 +1747,8 @@ def create_app():
                 new_id,
                 patient["id"],
                 professional_id,
-                data.get("date"),
-                data.get("time"),
+                normalized_date,
+                normalized_time,
                 duration_minutes,
                 data.get("status", "agendado"),
                 data.get("reason"),
@@ -1744,8 +1764,8 @@ def create_app():
         create_notification(
             db,
             "Novo agendamento",
-            f"{patient['nome']} Ã s {data.get('time')} em {data.get('date')}",
-            linked_date=data.get("date"),
+            f"{patient['nome']} Ã s {normalized_time} em {normalized_date}",
+            linked_date=normalized_date,
         )
         db.commit()
 
@@ -1811,16 +1831,12 @@ def create_app():
             params.append(patient["id"])
 
         if "date" in data:
-            if is_blank(data.get("date")):
-                abort(400, description="date é obrigatório.")
-            next_date = data.get("date")
+            next_date = parse_appointment_date(data.get("date"))
             updates.append("data = ?")
             params.append(next_date)
 
         if "time" in data:
-            if is_blank(data.get("time")):
-                abort(400, description="time é obrigatório.")
-            next_time = data.get("time")
+            next_time = parse_appointment_time(data.get("time"))
             updates.append("horario = ?")
             params.append(next_time)
 

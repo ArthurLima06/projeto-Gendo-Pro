@@ -82,7 +82,7 @@ const ResetPassword = () => {
         <Card className="shadow-elevated border-border">
           <CardContent className="pt-8 pb-8 px-8">
             <div className="flex justify-center mb-6">
-              <img src={gendoLogo} alt="Gendo Pro" className="h-16 w-16 object-contain" />
+              <img src={gendoLogo} alt="GridTime" className="h-16 w-16 object-contain" />
             </div>
 
             <div className="text-center mb-8">

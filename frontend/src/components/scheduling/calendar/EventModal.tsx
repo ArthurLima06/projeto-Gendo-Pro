@@ -38,6 +38,7 @@ interface EventModalSubmitPayload {
   agreementId?: string;
   agreementPlan?: string;
   durationMinutes: number;
+  repeatDays: number;
 }
 
 interface EventModalProps {
@@ -84,6 +85,7 @@ const EventModal = ({
   const [agreementId, setAgreementId] = useState("");
   const [agreementPlan, setAgreementPlan] = useState("");
   const [durationMinutes, setDurationMinutes] = useState(60);
+  const [repeatDays, setRepeatDays] = useState(1);
   const [isSaving, setIsSaving] = useState(false);
   const activeAgreements = useMemo(
     () => agreements.filter((item) => item.status === "ativo"),
@@ -149,6 +151,7 @@ const EventModal = ({
     setAgreementId("");
     setAgreementPlan("");
     setDurationMinutes(normalizeDuration(initialDurationMinutes));
+    setRepeatDays(1);
   }, [open, mode, appointment, initialDate, initialTime, initialDurationMinutes, professionalOptions]);
 
   useEffect(() => {
@@ -217,6 +220,7 @@ const EventModal = ({
         agreementId: careType === "convenio" ? agreementId : undefined,
         agreementPlan: careType === "convenio" ? agreementPlan : undefined,
         durationMinutes: normalizeDuration(durationMinutes),
+        repeatDays: mode === "create" ? Math.max(1, Math.min(5, repeatDays)) : 1,
       });
     } finally {
       setIsSaving(false);
@@ -273,6 +277,24 @@ const EventModal = ({
               onChange={(value) => setDurationMinutes(Number.parseInt(value.target.value || "60", 10))}
             />
           </div>
+
+          {mode === "create" && (
+            <div className="space-y-2">
+              <Label>Quantidade de dias</Label>
+              <Select value={String(repeatDays)} onValueChange={(value) => setRepeatDays(Number.parseInt(value, 10))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">1 dia</SelectItem>
+                  <SelectItem value="2">2 dias</SelectItem>
+                  <SelectItem value="3">3 dias</SelectItem>
+                  <SelectItem value="4">4 dias</SelectItem>
+                  <SelectItem value="5">5 dias</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label>Profissional</Label>

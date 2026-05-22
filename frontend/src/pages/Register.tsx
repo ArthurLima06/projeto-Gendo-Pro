@@ -29,7 +29,7 @@ const Register = () => {
         <div className="flex justify-center mb-6">
           <img
             src={gendoLogo}
-            alt="Gendo Pro"
+            alt="GridTime"
             className="h-16 w-16 object-contain"
           />
         </div>
@@ -37,7 +37,7 @@ const Register = () => {
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-2xl font-semibold text-foreground">
-            Comece a usar o Gendo Pro
+            Comece a usar o GridTime
           </h1>
           <p className="text-sm text-muted-foreground mt-2 max-w-sm mx-auto">
             Gerencie seus pacientes, agendamentos e finanças em um único lugar.

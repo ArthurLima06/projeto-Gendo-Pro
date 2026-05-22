@@ -41,8 +41,8 @@ def _seed_default_admin(db):
         return
 
     now = datetime.utcnow().isoformat()
-    admin_name = os.getenv("GENDO_ADMIN_NAME", "Administrador Gendo Pro")
-    admin_email = os.getenv("GENDO_ADMIN_EMAIL", "admin@gendopro.local").strip().lower()
+    admin_name = os.getenv("GENDO_ADMIN_NAME", "Administrador GridTime")
+    admin_email = os.getenv("GENDO_ADMIN_EMAIL", "admin@gridtime.local").strip().lower()
     admin_password = os.getenv("GENDO_ADMIN_PASSWORD", "Admin@123")
 
     db.execute(

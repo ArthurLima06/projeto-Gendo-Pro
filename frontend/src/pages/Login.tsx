@@ -79,7 +79,7 @@ const Login = () => {
             <div className="flex justify-center mb-6">
               <img
                 src={gendoLogo}
-                alt="Gendo Pro"
+                alt="GridTime"
                 className="h-16 w-16 object-contain"
               />
             </div>
@@ -87,7 +87,7 @@ const Login = () => {
             {/* Title */}
             <div className="text-center mb-8">
               <h1 className="text-2xl font-semibold text-foreground">
-                Bem-vindo ao Gendo Pro
+                Bem-vindo ao GridTime
               </h1>
               <p className="text-sm text-muted-foreground mt-2">
                 Gerencie seus atendimentos de forma simples e eficiente.

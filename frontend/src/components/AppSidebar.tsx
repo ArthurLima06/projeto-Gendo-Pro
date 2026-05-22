@@ -60,9 +60,9 @@ export function AppSidebar() {
     <Sidebar collapsible="icon" className="border-r border-border">
       <SidebarHeader className="p-4">
         <div className="flex items-center gap-3">
-          <img src={gendoLogo} alt="Gendo Pro" className="h-8 w-8 rounded-lg shrink-0 object-contain" />
+          <img src={gendoLogo} alt="GridTime" className="h-8 w-8 rounded-lg shrink-0 object-contain" />
           {!collapsed && (
-            <span className="font-semibold text-foreground text-sm">Gendo Pro</span>
+            <span className="font-semibold text-foreground text-sm">GridTime</span>
           )}
         </div>
       </SidebarHeader>

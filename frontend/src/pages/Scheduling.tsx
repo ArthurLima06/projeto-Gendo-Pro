@@ -22,6 +22,8 @@ import CalendarGrid from "@/components/scheduling/calendar/CalendarGrid";
 import EventModal, { type EventModalSubmitPayload } from "@/components/scheduling/calendar/EventModal";
 import EventPreviewCard from "@/components/scheduling/calendar/EventPreviewCard";
 import {
+  addDaysToDateKey,
+  buildDayPeriodLabel,
   buildMonthPeriodLabel,
   buildWeekPeriodLabel,
   clampDuration,
@@ -66,7 +68,7 @@ const Scheduling = () => {
   const focusDateParam = searchParams.get("date");
   const isLoading = useSimulatedLoading(900);
 
-  const [view, setView] = useState<"week" | "month">("week");
+  const [view, setView] = useState<"day" | "week" | "month">("week");
   const [refDate, setRefDate] = useState(() => {
     if (focusDateParam) {
       return new Date(`${focusDateParam}T12:00:00`);
@@ -78,6 +80,7 @@ const Scheduling = () => {
   const [formDate, setFormDate] = useState("");
   const [formTime, setFormTime] = useState("");
   const [formDuration, setFormDuration] = useState(DEFAULT_DURATION_MINUTES);
+  const [formRepeatDays, setFormRepeatDays] = useState(1);
   const [formProfessional, setFormProfessional] = useState("");
   const [formReason, setFormReason] = useState("");
   const [formNotes, setFormNotes] = useState("");
@@ -193,12 +196,20 @@ const Scheduling = () => {
   }, [resizeState]);
 
   const weekDays = useMemo(() => getWeekDays(refDate), [refDate]);
+  const dayViewDays = useMemo(() => {
+    const day = new Date(refDate);
+    day.setHours(12, 0, 0, 0);
+    return [day];
+  }, [refDate]);
   const monthGrid = useMemo(
     () => getMonthGrid(refDate.getFullYear(), refDate.getMonth()),
     [refDate]
   );
 
   const periodLabel = useMemo(() => {
+    if (view === "day") {
+      return buildDayPeriodLabel(refDate);
+    }
     if (view === "week") {
       return buildWeekPeriodLabel(weekDays);
     }
@@ -326,7 +337,7 @@ const Scheduling = () => {
     setIsScheduling(true);
     try {
       const selectedProfessional = professionalOptions.find((item) => item.id === formProfessional);
-      const created = await addAppointment({
+      const payload = {
         patient: formPatient,
         date: formDate,
         time: formTime,
@@ -338,30 +349,27 @@ const Scheduling = () => {
         agreementId: formCareType === "convenio" ? formAgreementId : undefined,
         agreementPlan: formCareType === "convenio" ? formAgreementPlan : undefined,
         duration: clampDuration(formDuration),
-      });
+      };
+      const recurrenceSummary = await createMultipleAppointments(
+        payload,
+        formRepeatDays,
+        formDuration
+      );
 
-      if (created) {
-        const persistedDuration = clampDuration(created.duration || formDuration);
-        setDurationById((prev) => ({
-          ...prev,
-          [created.id]: persistedDuration,
-        }));
+      if (recurrenceSummary.createdCount > 0) {
+        setFormPatient("");
+        setFormDate("");
+        setFormTime("");
+        setFormDuration(DEFAULT_DURATION_MINUTES);
+        setFormRepeatDays(1);
+        setFormProfessional("");
+        setFormReason("");
+        setFormNotes("");
+        setFormCareType("particular");
+        setFormAgreementId("");
+        setFormAgreementPlan("");
       }
-
-      setFormPatient("");
-      setFormDate("");
-      setFormTime("");
-      setFormDuration(DEFAULT_DURATION_MINUTES);
-      setFormProfessional("");
-      setFormReason("");
-      setFormNotes("");
-      setFormCareType("particular");
-      setFormAgreementId("");
-      setFormAgreementPlan("");
-      toast({
-        title: "Consulta agendada",
-        description: "O agendamento foi criado com sucesso.",
-      });
+      notifyRecurringCreation(recurrenceSummary, "Consulta agendada");
     } catch {
       toast({
         title: "Erro ao agendar consulta",
@@ -374,7 +382,8 @@ const Scheduling = () => {
 
   const handleModalSave = async (payload: EventModalSubmitPayload) => {
     if (modalMode === "create") {
-      const created = await addAppointment({
+      const recurrenceSummary = await createMultipleAppointments(
+        {
         patient: payload.patient,
         date: payload.date,
         time: payload.time,
@@ -386,25 +395,14 @@ const Scheduling = () => {
         agreementId: payload.agreementId,
         agreementPlan: payload.agreementPlan,
         duration: payload.durationMinutes,
-      });
-
-      if (!created) {
-        toast({
-          title: "Erro ao agendar consulta",
-          variant: "destructive",
-        });
-        return;
+        },
+        payload.repeatDays,
+        payload.durationMinutes
+      );
+      notifyRecurringCreation(recurrenceSummary, "Consulta agendada");
+      if (recurrenceSummary.createdCount > 0) {
+        setModalOpen(false);
       }
-
-      setDurationById((prev) => ({
-        ...prev,
-        [created.id]: clampDuration(created.duration || payload.durationMinutes),
-      }));
-      setModalOpen(false);
-      toast({
-        title: "Consulta agendada",
-        description: "O agendamento foi criado com sucesso.",
-      });
       return;
     }
 
@@ -530,12 +528,102 @@ const Scheduling = () => {
   const navigate = (direction: number) => {
     setRefDate((previous) => {
       const next = new Date(previous);
-      if (view === "week") {
+      if (view === "day") {
+        next.setDate(next.getDate() + direction);
+      } else if (view === "week") {
         next.setDate(next.getDate() + direction * 7);
       } else {
         next.setMonth(next.getMonth() + direction);
       }
       return next;
+    });
+  };
+
+  const createMultipleAppointments = async (
+    basePayload: {
+      patient: string;
+      date: string;
+      time: string;
+      professional: string;
+      professional_id?: string;
+      reason: string;
+      notes: string;
+      careType: "particular" | "convenio";
+      agreementId?: string;
+      agreementPlan?: string;
+      duration: number;
+    },
+    repeatDays: number,
+    fallbackDuration: number
+  ) => {
+    const safeRepeatDays = Math.max(1, Math.min(5, repeatDays));
+    let createdCount = 0;
+    let conflictCount = 0;
+    let errorCount = 0;
+    let lastErrorMessage = "";
+
+    for (let offset = 0; offset < safeRepeatDays; offset += 1) {
+      const response = await addAppointment({
+        ...basePayload,
+        date: addDaysToDateKey(basePayload.date, offset),
+      });
+
+      if (response.success) {
+        createdCount += 1;
+        const persistedDuration = clampDuration(response.data.duration || fallbackDuration);
+        setDurationById((prev) => ({
+          ...prev,
+          [response.data.id]: persistedDuration,
+        }));
+        continue;
+      }
+
+      if (response.error.code === "APPOINTMENT_CONFLICT") {
+        conflictCount += 1;
+      } else {
+        errorCount += 1;
+      }
+      lastErrorMessage = response.error.message;
+    }
+
+    return {
+      createdCount,
+      conflictCount,
+      errorCount,
+      totalRequested: safeRepeatDays,
+      lastErrorMessage,
+    };
+  };
+
+  const notifyRecurringCreation = (
+    summary: {
+      createdCount: number;
+      conflictCount: number;
+      errorCount: number;
+      totalRequested: number;
+      lastErrorMessage: string;
+    },
+    successTitle: string
+  ) => {
+    if (summary.createdCount > 0) {
+      const conflictPart =
+        summary.conflictCount > 0 ? ` ${summary.conflictCount} com conflito de horario.` : "";
+      const errorPart =
+        summary.errorCount > 0 ? ` ${summary.errorCount} com erro de validacao.` : "";
+      toast({
+        title: successTitle,
+        description:
+          summary.totalRequested === 1
+            ? "O agendamento foi criado com sucesso."
+            : `${summary.createdCount} de ${summary.totalRequested} agendamentos criados.${conflictPart}${errorPart}`,
+      });
+      return;
+    }
+
+    toast({
+      title: "Nao foi possivel criar os agendamentos",
+      description: summary.lastErrorMessage || "Verifique os dados e tente novamente.",
+      variant: "destructive",
     });
   };
 
@@ -661,6 +749,21 @@ const Scheduling = () => {
                 </Select>
               </div>
               <div className="space-y-2">
+                <Label>Quantidade de dias</Label>
+                <Select value={String(formRepeatDays)} onValueChange={(value) => setFormRepeatDays(Number.parseInt(value, 10))}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">1 dia</SelectItem>
+                    <SelectItem value="2">2 dias</SelectItem>
+                    <SelectItem value="3">3 dias</SelectItem>
+                    <SelectItem value="4">4 dias</SelectItem>
+                    <SelectItem value="5">5 dias</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
                 <Label>Profissional</Label>
                 <Select value={formProfessional} onValueChange={setFormProfessional}>
                   <SelectTrigger>
@@ -771,6 +874,14 @@ const Scheduling = () => {
             <div className="flex items-center gap-2">
               <div className="flex items-center overflow-hidden rounded-lg border border-border">
                 <button
+                  onClick={() => setView("day")}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                    view === "day" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  Dia
+                </button>
+                <button
                   onClick={() => setView("week")}
                   className={`px-3 py-1.5 text-xs font-medium transition-colors ${
                     view === "week" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
@@ -812,11 +923,16 @@ const Scheduling = () => {
                   </div>
                 ))}
               </div>
-            ) : view === "week" ? (
+            ) : view === "week" || view === "day" ? (
               <CalendarGrid
-                weekDays={weekDays}
+                weekDays={view === "day" ? dayViewDays : weekDays}
                 appointmentsByDate={appointmentsByDate}
                 selectedAppointmentId={selectedAppointmentId}
+                emptyStateDescription={
+                  view === "day"
+                    ? "Nenhuma consulta agendada para este dia."
+                    : "Nenhuma consulta agendada para esta semana."
+                }
                 onEventClick={openEditModal}
                 onEmptyCellClick={handleCreateFromEmptyCell}
                 onDropAppointment={(appointmentId, date, hour, minute) =>

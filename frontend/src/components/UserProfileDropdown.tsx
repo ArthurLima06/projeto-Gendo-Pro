@@ -40,7 +40,7 @@ const UserProfileDropdown = () => {
   }, [userEmail]);
 
   const displayEmail = userEmail || "empresa@email.com";
-  const displayName = currentUser?.name || "Gendo Pro";
+  const displayName = currentUser?.name || "GridTime";
 
   const handleLogout = () => {
     logout();

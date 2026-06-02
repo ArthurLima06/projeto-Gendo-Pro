@@ -4,6 +4,7 @@ export interface MedicalRecord {
   id: string;
   patientId?: string | null;
   patient: string;
+  patientCpf?: string | null;
   date: string;
   time?: string | null;
   reason: string;

@@ -5,6 +5,7 @@ export interface FinancialRecord {
   id: string;
   patientId?: string | null;
   patient: string;
+  patientCpf?: string | null;
   date: string;
   amount: string;
   status: "Pago" | "Pendente" | "Atrasado" | "Convenio";
@@ -68,6 +69,7 @@ export interface FinancialSettings {
 export interface FinancialPatientListItem {
   id: string;
   name: string;
+  cpf?: string | null;
   careType: "particular" | "convenio";
   agreementId?: string | null;
   agreementName?: string | null;
@@ -81,6 +83,7 @@ export interface FinancialPatientDetail {
   patient: {
     id: string;
     name: string;
+    cpf?: string | null;
     careType: "particular" | "convenio";
     agreementId?: string | null;
     agreementName?: string | null;

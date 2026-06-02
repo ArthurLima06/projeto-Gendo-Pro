@@ -26,6 +26,7 @@ import {
   type FinancialPatientDetail,
   type FinancialPatientListItem,
 } from "@/services/financialService";
+import { formatCpf } from "@/services/patientsService";
 
 interface TransactionDraft {
   date: string;
@@ -497,7 +498,14 @@ const Financial = () => {
                   <AccordionItem key={patient.id} value={patient.id} className="border-border">
                     <AccordionTrigger className="px-4 sm:px-6 hover:no-underline">
                       <div className="grid w-full grid-cols-1 gap-2 text-left sm:grid-cols-4 sm:items-center">
-                        <span className="font-medium">{patient.name}</span>
+                        <span className="font-medium">
+                          {patient.name}
+                          {patient.cpf && (
+                            <span className="block text-xs font-normal text-muted-foreground tabular-nums">
+                              CPF {formatCpf(patient.cpf)}
+                            </span>
+                          )}
+                        </span>
                         <span
                           className={`text-sm font-semibold ${
                             patient.summary.balance < 0 ? "text-destructive" : "text-success"

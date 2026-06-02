@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSimulatedLoading } from "@/hooks/useSimulatedLoading";
 import { toast } from "@/hooks/use-toast";
-import { getPatients, type Patient } from "@/services/patientsService";
+import { formatCpf, getPatients, type Patient } from "@/services/patientsService";
 import {
   formatProfessionalDisplayName,
   getProfessionals,
@@ -106,6 +106,7 @@ const Scheduling = () => {
   const [resizeState, setResizeState] = useState<ResizeState | null>(null);
   const [recordsDrawerOpen, setRecordsDrawerOpen] = useState(false);
   const [recordsDrawerPatientName, setRecordsDrawerPatientName] = useState("");
+  const [recordsDrawerPatientCpf, setRecordsDrawerPatientCpf] = useState<string | null>(null);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [patientRecords, setPatientRecords] = useState<MedicalRecord[]>([]);
 
@@ -484,6 +485,9 @@ const Scheduling = () => {
 
     closePreview();
     setRecordsDrawerPatientName(appointment.patient || "Paciente");
+    setRecordsDrawerPatientCpf(
+      appointment.patientCpf || patientOptions.find((item) => item.id === patientId)?.cpf || null
+    );
     setRecordsDrawerOpen(true);
     setRecordsLoading(true);
 
@@ -750,7 +754,7 @@ const Scheduling = () => {
                   <SelectContent>
                     {patientOptions.map((patient) => (
                       <SelectItem key={patient.id} value={patient.name}>
-                        {patient.name}
+                        {patient.name}{patient.cpf ? ` - CPF ${formatCpf(patient.cpf)}` : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1027,6 +1031,7 @@ const Scheduling = () => {
       <PatientRecordsDrawer
         open={recordsDrawerOpen}
         patientName={recordsDrawerPatientName}
+        patientCpf={recordsDrawerPatientCpf}
         isLoading={recordsLoading}
         records={patientRecords}
         onOpenChange={setRecordsDrawerOpen}

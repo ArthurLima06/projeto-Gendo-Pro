@@ -19,13 +19,17 @@ import {
 } from "@/components/ui/form";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { createPatient } from "@/services/patientsService";
+import { createPatient, formatCpf, isValidCpf, normalizeCpf } from "@/services/patientsService";
 import { formatCep, lookupCep, normalizeCep } from "@/services/cepService";
 import { getAgreements, type Agreement } from "@/services/agreementsService";
 
 const patientSchema = z
   .object({
     name: z.string().min(1, "Informe o nome completo"),
+    cpf: z
+      .string()
+      .min(1, "Informe o CPF")
+      .refine((value) => isValidCpf(value), "CPF invalido"),
     age: z
       .string()
       .min(1, "Informe a idade")
@@ -90,6 +94,7 @@ const PatientRegistration = () => {
     resolver: zodResolver(patientSchema),
     defaultValues: {
       name: "",
+      cpf: "",
       age: "",
       school: "",
       responsible: "",
@@ -189,6 +194,7 @@ const PatientRegistration = () => {
     try {
       const res = await createPatient({
         name: data.name,
+        cpf: normalizeCpf(data.cpf),
         age: data.age,
         school: data.school,
         responsible: data.responsible,
@@ -334,6 +340,26 @@ const PatientRegistration = () => {
                           placeholder="Digite o nome completo"
                           className={fieldState.error ? "border-destructive focus-visible:ring-destructive" : ""}
                           {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="cpf"
+                  render={({ field, fieldState }) => (
+                    <FormItem>
+                      <FormLabel>CPF<RequiredMark /></FormLabel>
+                      <FormControl>
+                        <Input
+                          inputMode="numeric"
+                          placeholder="000.000.000-00"
+                          className={fieldState.error ? "border-destructive focus-visible:ring-destructive" : ""}
+                          value={field.value || ""}
+                          onChange={(event) => field.onChange(formatCpf(event.target.value))}
                         />
                       </FormControl>
                       <FormMessage />

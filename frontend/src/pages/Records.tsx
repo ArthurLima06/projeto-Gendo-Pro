@@ -11,7 +11,7 @@ import { TableSkeleton } from "@/components/TableSkeleton";
 import { EmptyState } from "@/components/EmptyState";
 import { toast } from "@/hooks/use-toast";
 import { getRecords, createRecord, type MedicalRecord } from "@/services/recordsService";
-import { getPatients, type Patient } from "@/services/patientsService";
+import { formatCpf, getPatients, type Patient } from "@/services/patientsService";
 
 const Records = () => {
   const [isAdding, setIsAdding] = useState(false);
@@ -84,7 +84,9 @@ const Records = () => {
                   <SelectTrigger><SelectValue placeholder="Selecionar paciente" /></SelectTrigger>
                   <SelectContent>
                     {patients.map((p) => (
-                      <SelectItem key={p.id} value={p.name}>{p.name}</SelectItem>
+                      <SelectItem key={p.id} value={p.name}>
+                        {p.name}{p.cpf ? ` - CPF ${formatCpf(p.cpf)}` : ""}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -124,7 +126,7 @@ const Records = () => {
         </CardHeader>
         <CardContent className="p-0">
           {isLoading ? (
-            <TableSkeleton columns={5} rows={5} headers={["Paciente", "Data", "Horário", "Motivo", "Registrado Em"]} />
+            <TableSkeleton columns={6} rows={5} headers={["Paciente", "CPF", "Data", "Horário", "Motivo", "Registrado Em"]} />
           ) : loadError ? (
             <EmptyState
               icon={FileText}
@@ -142,6 +144,7 @@ const Records = () => {
               <TableHeader>
                 <TableRow className="bg-muted/50 hover:bg-muted/50">
                   <TableHead className="text-xs uppercase tracking-wider font-medium">Paciente</TableHead>
+                  <TableHead className="text-xs uppercase tracking-wider font-medium">CPF</TableHead>
                   <TableHead className="text-xs uppercase tracking-wider font-medium">Data</TableHead>
                   <TableHead className="text-xs uppercase tracking-wider font-medium">Horário</TableHead>
                   <TableHead className="text-xs uppercase tracking-wider font-medium">Motivo</TableHead>
@@ -152,6 +155,7 @@ const Records = () => {
                 {records.map((r) => (
                   <TableRow key={r.id} className="hover:bg-muted/30 transition-colors">
                     <TableCell className="font-medium">{r.patient}</TableCell>
+                    <TableCell className="tabular-nums text-muted-foreground">{r.patientCpf ? formatCpf(r.patientCpf) : "-"}</TableCell>
                     <TableCell className="tabular-nums text-muted-foreground">{r.date}</TableCell>
                     <TableCell className="tabular-nums text-muted-foreground">{r.time}</TableCell>
                     <TableCell>{r.reason}</TableCell>

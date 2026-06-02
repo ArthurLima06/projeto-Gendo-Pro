@@ -5,6 +5,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS pacientes (
   id TEXT PRIMARY KEY,
   nome TEXT NOT NULL,
+  cpf TEXT,
   idade INTEGER,
   escola TEXT,
   responsavel TEXT,

@@ -84,6 +84,7 @@ def init_db():
     _ensure_column(db, "professionals", "future_status", "future_status TEXT NOT NULL DEFAULT 'active'")
     _ensure_column(db, "professionals", "future_company_id", "future_company_id TEXT")
     _ensure_column(db, "professionals", "specialty", "specialty TEXT")
+    _ensure_column(db, "pacientes", "cpf", "cpf TEXT")
     _ensure_column(db, "pacientes", "cep", "cep TEXT")
     _ensure_column(db, "pacientes", "endereco", "endereco TEXT")
     _ensure_column(db, "pacientes", "numero", "numero TEXT")
@@ -126,6 +127,13 @@ def init_db():
     )
 
     db.execute("CREATE INDEX IF NOT EXISTS idx_professionals_email ON professionals(email)")
+    db.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pacientes_cpf_unique
+        ON pacientes(cpf)
+        WHERE cpf IS NOT NULL AND cpf <> ''
+        """
+    )
     db.execute("CREATE INDEX IF NOT EXISTS idx_agenda_professional_id ON agenda(professional_id)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_token_hash ON auth_sessions(token_hash)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_pacientes_forma_atendimento ON pacientes(forma_atendimento)")

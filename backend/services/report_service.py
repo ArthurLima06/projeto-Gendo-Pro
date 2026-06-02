@@ -10,6 +10,14 @@ from backend.database import get_db
 
 logger = logging.getLogger(__name__)
 
+REPORT_TYPES = {"general", "records", "patient_data", "appointments"}
+REPORT_TITLES = {
+    "general": "Relatorio Geral",
+    "records": "Relatorio de Prontuarios",
+    "patient_data": "Relatorio de Dados do Paciente",
+    "appointments": "Relatorio de Agendamentos",
+}
+
 
 class ReportError(Exception):
     """Base exception for report generation errors."""
@@ -31,18 +39,43 @@ def _safe_value(value: Any) -> str:
     return str(value)
 
 
+def _format_cpf(value: Any) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if len(digits) != 11:
+        return "-"
+    return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:]}"
+
+
+def _money(value: Any) -> str:
+    return f"R$ {float(value or 0):.2f}"
+
+
+def _care_type_label(value: Any) -> str:
+    return "Convenio" if str(value or "particular").strip().lower() == "convenio" else "Particular"
+
+
+def _validate_report_type(report_type: str | None) -> str:
+    normalized = str(report_type or "general").strip().lower()
+    if normalized not in REPORT_TYPES:
+        raise ValueError("Tipo de relatorio invalido.")
+    return normalized
+
+
 def _fetch_patient(patient_id: str) -> dict[str, Any]:
     db = get_db()
     patient_row = db.execute(
         """
-        SELECT id, nome, idade, escola, responsavel, telefone, email, forma_atendimento, convenio_nome, plano_convenio
+        SELECT
+            id, nome, cpf, idade, escola, responsavel, telefone, email, cep,
+            endereco, numero, bairro, cidade, forma_atendimento, convenio_nome,
+            plano_convenio, observacoes, created_at, updated_at
         FROM pacientes
         WHERE id = ?
         """,
         (patient_id,),
     ).fetchone()
     if patient_row is None:
-        raise PatientNotFoundError("Paciente não encontrado.")
+        raise PatientNotFoundError("Paciente nao encontrado.")
     return _row_to_dict(patient_row)
 
 
@@ -50,7 +83,7 @@ def _fetch_sessions(patient_id: str, start_date: str, end_date: str) -> list[dic
     db = get_db()
     rows = db.execute(
         """
-        SELECT id, data, atividade, evolucao, observacoes
+        SELECT id, data, atividade, evolucao, observacoes, created_at
         FROM sessoes
         WHERE paciente_id = ?
           AND date(data) BETWEEN date(?) AND date(?)
@@ -61,30 +94,35 @@ def _fetch_sessions(patient_id: str, start_date: str, end_date: str) -> list[dic
     return [_row_to_dict(row) for row in rows]
 
 
-def _fetch_appointments(patient_id: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
+def _fetch_notes(patient_id: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
     db = get_db()
     rows = db.execute(
         """
-        SELECT id, data, horario, status, motivo, profissional, observacoes, forma_atendimento, convenio_nome, plano_convenio
-        FROM agenda
+        SELECT id, data, hora, observacoes, created_at
+        FROM registros
         WHERE paciente_id = ?
           AND date(data) BETWEEN date(?) AND date(?)
-        ORDER BY date(data) ASC, horario ASC
+        ORDER BY date(data) ASC, hora ASC, created_at ASC
         """,
         (patient_id, start_date, end_date),
     ).fetchall()
     return [_row_to_dict(row) for row in rows]
 
 
-def _fetch_notes(patient_id: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
+def _fetch_appointments(patient_id: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
     db = get_db()
     rows = db.execute(
         """
-        SELECT id, data, hora, observacoes
-        FROM registros
-        WHERE paciente_id = ?
-          AND date(data) BETWEEN date(?) AND date(?)
-        ORDER BY date(data) ASC, hora ASC, created_at ASC
+        SELECT
+            a.id, a.data, a.horario, a.status, a.motivo,
+            COALESCE(pr.name, a.profissional) AS profissional,
+            pr.specialty AS especialidade,
+            a.observacoes, a.forma_atendimento, a.convenio_nome, a.plano_convenio
+        FROM agenda a
+        LEFT JOIN professionals pr ON pr.id = a.professional_id
+        WHERE a.paciente_id = ?
+          AND date(a.data) BETWEEN date(?) AND date(?)
+        ORDER BY date(a.data) ASC, a.horario ASC
         """,
         (patient_id, start_date, end_date),
     ).fetchall()
@@ -96,17 +134,9 @@ def _fetch_financial_entries(patient_id: str, start_date: str, end_date: str) ->
     rows = db.execute(
         """
         SELECT
-            id,
-            data,
-            valor,
-            status,
-            metodo_pagamento,
-            observacoes,
-            forma_atendimento,
-            convenio_nome,
-            plano_convenio,
-            transaction_type,
-            created_at
+            id, data, valor, status, metodo_pagamento, observacoes,
+            forma_atendimento, convenio_nome, plano_convenio, transaction_type,
+            source, appointment_id, created_at
         FROM financeiro
         WHERE paciente_id = ?
           AND date(data) BETWEEN date(?) AND date(?)
@@ -117,6 +147,59 @@ def _fetch_financial_entries(patient_id: str, start_date: str, end_date: str) ->
     return [_row_to_dict(row) for row in rows]
 
 
+def _financial_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    paid = 0.0
+    pending = 0.0
+    overdue = 0.0
+    convenio = 0.0
+    particular = 0.0
+    for entry in entries:
+        value = float(entry.get("valor") or 0)
+        care_type = str(entry.get("forma_atendimento") or "particular").strip().lower()
+        status = str(entry.get("status") or "").strip().lower()
+        if care_type == "convenio":
+            convenio += value
+        else:
+            particular += value
+            if status == "pago":
+                paid += value
+            elif status == "pendente":
+                pending += abs(value)
+            elif status == "atrasado":
+                overdue += abs(value)
+    return {
+        "total_paid": paid,
+        "total_pending": pending,
+        "total_overdue": overdue,
+        "total_convenio": convenio,
+        "total_particular": particular,
+        "balance": sum(float(entry.get("valor") or 0) for entry in entries),
+    }
+
+
+def _patient_sheet_row(patient: dict[str, Any], start_date: str, end_date: str) -> dict[str, Any]:
+    return {
+        "Nome": _safe_value(patient.get("nome")),
+        "CPF": _format_cpf(patient.get("cpf")),
+        "Telefone": _safe_value(patient.get("telefone")),
+        "Email": _safe_value(patient.get("email")),
+        "Idade": _safe_value(patient.get("idade")),
+        "Profissao": _safe_value(patient.get("escola")),
+        "Responsavel": _safe_value(patient.get("responsavel")),
+        "CEP": _safe_value(patient.get("cep")),
+        "Endereco": _safe_value(patient.get("endereco")),
+        "Numero": _safe_value(patient.get("numero")),
+        "Bairro": _safe_value(patient.get("bairro")),
+        "Cidade": _safe_value(patient.get("cidade")),
+        "Forma de Atendimento": _care_type_label(patient.get("forma_atendimento")),
+        "Convenio": _safe_value(patient.get("convenio_nome")),
+        "Plano": _safe_value(patient.get("plano_convenio")),
+        "Observacoes": _safe_value(patient.get("observacoes")),
+        "Data Inicial": start_date,
+        "Data Final": end_date,
+    }
+
+
 def _draw_wrapped_line(
     pdf: canvas.Canvas,
     text: str,
@@ -125,7 +208,7 @@ def _draw_wrapped_line(
     max_width: float,
     line_height: float = 14,
 ) -> float:
-    words = text.split()
+    words = str(text).split()
     if not words:
         return y - line_height
 
@@ -142,20 +225,26 @@ def _draw_wrapped_line(
     return y - line_height
 
 
-def generate_patient_pdf(patient_id: str, start_date: str, end_date: str) -> tuple[BytesIO, str]:
+def generate_patient_pdf(
+    patient_id: str,
+    start_date: str,
+    end_date: str,
+    report_type: str | None = "general",
+) -> tuple[BytesIO, str]:
+    selected_type = _validate_report_type(report_type)
     patient = _fetch_patient(patient_id)
     sessions = _fetch_sessions(patient_id, start_date, end_date)
-    appointments = _fetch_appointments(patient_id, start_date, end_date)
     notes = _fetch_notes(patient_id, start_date, end_date)
+    appointments = _fetch_appointments(patient_id, start_date, end_date)
+    financial_entries = _fetch_financial_entries(patient_id, start_date, end_date)
+    summary = _financial_summary(financial_entries)
 
     logger.info(
-        "Generating PDF report for patient=%s period=%s..%s (sessions=%s appointments=%s notes=%s)",
+        "Generating %s PDF report for patient=%s period=%s..%s",
+        selected_type,
         patient_id,
         start_date,
         end_date,
-        len(sessions),
-        len(appointments),
-        len(notes),
     )
 
     buffer = BytesIO()
@@ -186,221 +275,203 @@ def generate_patient_pdf(patient_id: str, start_date: str, end_date: str) -> tup
         y = _draw_wrapped_line(pdf, text, margin + indent, y, max_width - indent)
 
     pdf.setFont("Helvetica-Bold", 16)
-    pdf.drawString(margin, y, "Relatório do Paciente")
-    y -= 24
-
-    section_title("Dados do Paciente")
-    line(f"Nome: {_safe_value(patient.get('nome'))}")
-    line(f"Idade: {_safe_value(patient.get('idade'))}")
-    line(f"Escolaridade: {_safe_value(patient.get('escola'))}")
-    line(f"Responsável: {_safe_value(patient.get('responsavel'))}")
-    line(f"Telefone: {_safe_value(patient.get('telefone'))}")
-    line(f"Email: {_safe_value(patient.get('email'))}")
-    patient_care_type = str(patient.get("forma_atendimento") or "particular").strip().lower()
-    line(f"Tipo de Atendimento: {'Convenio' if patient_care_type == 'convenio' else 'Particular'}")
-    if patient_care_type == "convenio":
-        line(f"Convenio: {_safe_value(patient.get('convenio_nome'))}")
-        line(f"Plano: {_safe_value(patient.get('plano_convenio'))}")
+    pdf.drawString(margin, y, REPORT_TITLES[selected_type])
+    y -= 22
+    pdf.setFont("Helvetica", 10)
+    line(f"Paciente: {_safe_value(patient.get('nome'))} | CPF: {_format_cpf(patient.get('cpf'))}")
+    line(f"Periodo: {start_date} ate {end_date}")
     y -= 6
 
-    section_title("Período do Relatório")
-    line(f"Data Inicial: {start_date}")
-    line(f"Data Final: {end_date}")
-    y -= 6
+    if selected_type in {"general", "records", "patient_data"}:
+        section_title("Dados do Paciente")
+        patient_fields = [
+            ("Nome", patient.get("nome")),
+            ("CPF", _format_cpf(patient.get("cpf"))),
+            ("Telefone", patient.get("telefone")),
+            ("Email", patient.get("email")),
+            ("Endereco", patient.get("endereco")),
+            ("Numero", patient.get("numero")),
+            ("Bairro", patient.get("bairro")),
+            ("Cidade", patient.get("cidade")),
+            ("Responsavel", patient.get("responsavel")),
+            ("Profissao", patient.get("escola")),
+            ("Forma de Atendimento", _care_type_label(patient.get("forma_atendimento"))),
+            ("Convenio", patient.get("convenio_nome")),
+            ("Plano", patient.get("plano_convenio")),
+            ("Observacoes", patient.get("observacoes")),
+        ]
+        basic_limit = 4 if selected_type == "records" else len(patient_fields)
+        for label, value in patient_fields[:basic_limit]:
+            line(f"{label}: {_safe_value(value)}")
+        y -= 6
 
-    section_title("Histórico de Sessões")
-    if not sessions and not appointments and not notes:
-        line("Nenhum registro encontrado no período selecionado.")
-    else:
-        if sessions:
-            line("Sessões:", indent=0)
-            for session in sessions:
-                line(
-                    f"- {session.get('data')} | Atividade: {_safe_value(session.get('atividade'))}",
-                    indent=10,
-                )
-                line(f"  Evolução: {_safe_value(session.get('evolucao'))}", indent=10)
-                line(f"  Observações: {_safe_value(session.get('observacoes'))}", indent=10)
-                y -= 4
-        if appointments:
-            line("Agendamentos:", indent=0)
-            for appointment in appointments:
-                line(
-                    f"- {appointment.get('data')} {_safe_value(appointment.get('horario'))} | Status: {_safe_value(appointment.get('status'))}",
-                    indent=10,
-                )
-                line(f"  Motivo: {_safe_value(appointment.get('motivo'))}", indent=10)
-                line(f"  Profissional: {_safe_value(appointment.get('profissional'))}", indent=10)
-                appointment_care_type = str(appointment.get("forma_atendimento") or "particular").strip().lower()
-                line(f"  Tipo: {'Convenio' if appointment_care_type == 'convenio' else 'Particular'}", indent=10)
-                if appointment_care_type == "convenio":
-                    line(f"  Convenio: {_safe_value(appointment.get('convenio_nome'))}", indent=10)
-                    line(f"  Plano: {_safe_value(appointment.get('plano_convenio'))}", indent=10)
-                line(f"  Observações: {_safe_value(appointment.get('observacoes'))}", indent=10)
-                y -= 4
-
-    y -= 6
-    section_title("Observações")
-    if not notes:
-        line("Nenhum registro encontrado no período selecionado.")
-    else:
+    if selected_type in {"general", "records"}:
+        section_title("Prontuarios")
+        if not sessions and not notes:
+            line("Nenhum prontuario encontrado no periodo selecionado.")
+        for session in sessions:
+            line(f"- {session.get('data')} | Atividade: {_safe_value(session.get('atividade'))}", indent=10)
+            line(f"  Evolucao: {_safe_value(session.get('evolucao'))}", indent=10)
+            line(f"  Observacoes: {_safe_value(session.get('observacoes'))}", indent=10)
+            y -= 4
         for note in notes:
+            line(f"- {note.get('data')} {_safe_value(note.get('hora'))} | {_safe_value(note.get('observacoes'))}", indent=10)
+            y -= 4
+
+    if selected_type in {"general", "appointments"}:
+        section_title("Agendamentos")
+        if not appointments:
+            line("Nenhum agendamento encontrado no periodo selecionado.")
+        for appointment in appointments:
             line(
-                f"- {note.get('data')} {_safe_value(note.get('hora'))} | {_safe_value(note.get('observacoes'))}",
+                f"- {appointment.get('data')} {appointment.get('horario')} | Status: {_safe_value(appointment.get('status'))}",
                 indent=10,
             )
+            line(f"  Profissional: {_safe_value(appointment.get('profissional'))}", indent=10)
+            line(f"  Especialidade: {_safe_value(appointment.get('especialidade'))}", indent=10)
+            line(f"  Tipo: {_care_type_label(appointment.get('forma_atendimento'))}", indent=10)
+            line(f"  Convenio: {_safe_value(appointment.get('convenio_nome'))}", indent=10)
+            line(f"  Plano: {_safe_value(appointment.get('plano_convenio'))}", indent=10)
+            line(f"  Motivo: {_safe_value(appointment.get('motivo'))}", indent=10)
+            y -= 4
+
+    if selected_type == "general":
+        section_title("Financeiro")
+        line(f"Total pago: {_money(summary['total_paid'])}")
+        line(f"Total pendente: {_money(summary['total_pending'])}")
+        line(f"Total atrasado: {_money(summary['total_overdue'])}")
+        line(f"Convenio: {_money(summary['total_convenio'])}")
+        line(f"Particular: {_money(summary['total_particular'])}")
+        if not financial_entries:
+            line("Nenhum lancamento financeiro no periodo selecionado.")
+        for entry in financial_entries:
+            line(
+                f"- {entry.get('data')} | Valor: {_money(entry.get('valor'))} | Status: {_safe_value(entry.get('status'))}",
+                indent=10,
+            )
+            line(f"  Atendimento: {_care_type_label(entry.get('forma_atendimento'))}", indent=10)
+            line(f"  Metodo: {_safe_value(entry.get('metodo_pagamento'))}", indent=10)
+            y -= 4
+
+        section_title("Resumo Geral")
+        line(f"Quantidade de consultas: {len(appointments)}")
+        line(f"Quantidade de prontuarios: {len(sessions) + len(notes)}")
+        line(f"Situacao financeira: {'Pendente' if summary['total_pending'] or summary['total_overdue'] else 'Sem pendencias'}")
+        line(f"Total pago: {_money(summary['total_paid'])}")
+        line(f"Total pendente: {_money(summary['total_pending'] + summary['total_overdue'])}")
 
     pdf.save()
     buffer.seek(0)
-    filename = f"relatorio_paciente_{patient_id}_{start_date}_{end_date}.pdf"
+    filename = f"relatorio_{selected_type}_{patient_id}_{start_date}_{end_date}.pdf"
     return buffer, filename
 
 
-def generate_patient_excel(patient_id: str, start_date: str, end_date: str) -> tuple[BytesIO, str]:
+def generate_patient_excel(
+    patient_id: str,
+    start_date: str,
+    end_date: str,
+    report_type: str | None = "general",
+) -> tuple[BytesIO, str]:
+    selected_type = _validate_report_type(report_type)
     patient = _fetch_patient(patient_id)
     sessions = _fetch_sessions(patient_id, start_date, end_date)
-    appointments = _fetch_appointments(patient_id, start_date, end_date)
     notes = _fetch_notes(patient_id, start_date, end_date)
+    appointments = _fetch_appointments(patient_id, start_date, end_date)
+    financial_entries = _fetch_financial_entries(patient_id, start_date, end_date)
+    summary = _financial_summary(financial_entries)
 
-    logger.info(
-        "Generating Excel report for patient=%s period=%s..%s (sessions=%s appointments=%s notes=%s)",
-        patient_id,
-        start_date,
-        end_date,
-        len(sessions),
-        len(appointments),
-        len(notes),
-    )
-
-    patient_df = pd.DataFrame(
+    patient_df = pd.DataFrame([_patient_sheet_row(patient, start_date, end_date)])
+    records_rows = [
+        {
+            "Tipo": "Sessao",
+            "Data": session.get("data"),
+            "Hora": "",
+            "Atividade/Motivo": _safe_value(session.get("atividade")),
+            "Evolucao": _safe_value(session.get("evolucao")),
+            "Observacoes": _safe_value(session.get("observacoes")),
+        }
+        for session in sessions
+    ] + [
+        {
+            "Tipo": "Registro",
+            "Data": note.get("data"),
+            "Hora": _safe_value(note.get("hora")),
+            "Atividade/Motivo": "",
+            "Evolucao": "",
+            "Observacoes": _safe_value(note.get("observacoes")),
+        }
+        for note in notes
+    ]
+    appointments_rows = [
+        {
+            "Data": item.get("data"),
+            "Hora": item.get("horario"),
+            "Profissional": _safe_value(item.get("profissional")),
+            "Especialidade": _safe_value(item.get("especialidade")),
+            "Tipo de Atendimento": _care_type_label(item.get("forma_atendimento")),
+            "Convenio": _safe_value(item.get("convenio_nome")),
+            "Plano": _safe_value(item.get("plano_convenio")),
+            "Status": _safe_value(item.get("status")),
+            "Motivo": _safe_value(item.get("motivo")),
+            "Observacoes": _safe_value(item.get("observacoes")),
+        }
+        for item in appointments
+    ]
+    financial_rows = [
+        {
+            "Data": entry.get("data"),
+            "Valor": float(entry.get("valor") or 0),
+            "Status": _safe_value(entry.get("status")),
+            "Metodo": _safe_value(entry.get("metodo_pagamento")),
+            "Forma de Atendimento": _care_type_label(entry.get("forma_atendimento")),
+            "Convenio": _safe_value(entry.get("convenio_nome")),
+            "Plano": _safe_value(entry.get("plano_convenio")),
+            "Tipo": _safe_value(entry.get("transaction_type")),
+            "Observacoes": _safe_value(entry.get("observacoes")),
+        }
+        for entry in financial_entries
+    ]
+    summary_df = pd.DataFrame(
         [
             {
-                "Nome": _safe_value(patient.get("nome")),
-                "Idade": _safe_value(patient.get("idade")),
-                "Escolaridade": _safe_value(patient.get("escola")),
-                "Responsável": _safe_value(patient.get("responsavel")),
-                "Telefone": _safe_value(patient.get("telefone")),
-                "Email": _safe_value(patient.get("email")),
-                "Tipo de Atendimento": "Convenio"
-                if str(patient.get("forma_atendimento") or "particular").strip().lower() == "convenio"
-                else "Particular",
-                "Convenio": _safe_value(patient.get("convenio_nome")),
-                "Plano Convenio": _safe_value(patient.get("plano_convenio")),
-                "Data Inicial": start_date,
-                "Data Final": end_date,
+                "Consultas": len(appointments),
+                "Prontuarios": len(records_rows),
+                "Total Pago": summary["total_paid"],
+                "Total Pendente": summary["total_pending"],
+                "Total Atrasado": summary["total_overdue"],
+                "Convenio": summary["total_convenio"],
+                "Particular": summary["total_particular"],
+                "Saldo": summary["balance"],
             }
         ]
     )
 
-    history_rows: list[dict[str, Any]] = []
-    for session in sessions:
-        history_rows.append(
-            {
-                "Tipo": "Sessão",
-                "Data": session.get("data"),
-                "Hora": "",
-                "Atividade/Motivo": _safe_value(session.get("atividade")),
-                "Profissional": "",
-                "Status": "",
-                "Tipo Atendimento": "",
-                "Convenio": "",
-                "Plano Convenio": "",
-                "Detalhes": _safe_value(session.get("evolucao")),
-                "Observações": _safe_value(session.get("observacoes")),
-            }
-        )
-    for appointment in appointments:
-        history_rows.append(
-            {
-                "Tipo": "Agendamento",
-                "Data": appointment.get("data"),
-                "Hora": _safe_value(appointment.get("horario")),
-                "Atividade/Motivo": _safe_value(appointment.get("motivo")),
-                "Profissional": _safe_value(appointment.get("profissional")),
-                "Status": _safe_value(appointment.get("status")),
-                "Tipo Atendimento": "Convenio"
-                if str(appointment.get("forma_atendimento") or "particular").strip().lower() == "convenio"
-                else "Particular",
-                "Convenio": _safe_value(appointment.get("convenio_nome")),
-                "Plano Convenio": _safe_value(appointment.get("plano_convenio")),
-                "Detalhes": "",
-                "Observações": _safe_value(appointment.get("observacoes")),
-            }
-        )
-
-    if history_rows:
-        history_df = pd.DataFrame(history_rows).sort_values(by=["Data", "Hora"], na_position="last")
-    else:
-        history_df = pd.DataFrame(
-            [{"Mensagem": "Nenhum registro encontrado no período selecionado."}]
-        )
-
-    if notes:
-        notes_df = pd.DataFrame(
-            [
-                {
-                    "Data": note.get("data"),
-                    "Hora": _safe_value(note.get("hora")),
-                    "Observação": _safe_value(note.get("observacoes")),
-                }
-                for note in notes
-            ]
-        ).sort_values(by=["Data", "Hora"], na_position="last")
-    else:
-        notes_df = pd.DataFrame(
-            [{"Mensagem": "Nenhum registro encontrado no período selecionado."}]
-        )
-
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         patient_df.to_excel(writer, index=False, sheet_name="Dados do Paciente")
-        history_df.to_excel(writer, index=False, sheet_name="Histórico de Sessões")
-        notes_df.to_excel(writer, index=False, sheet_name="Observações")
+        if selected_type in {"general", "records"}:
+            pd.DataFrame(records_rows or [{"Mensagem": "Nenhum prontuario encontrado."}]).to_excel(
+                writer, index=False, sheet_name="Prontuarios"
+            )
+        if selected_type in {"general", "appointments"}:
+            pd.DataFrame(appointments_rows or [{"Mensagem": "Nenhum agendamento encontrado."}]).to_excel(
+                writer, index=False, sheet_name="Agendamentos"
+            )
+        if selected_type == "general":
+            pd.DataFrame(financial_rows or [{"Mensagem": "Nenhum lancamento financeiro encontrado."}]).to_excel(
+                writer, index=False, sheet_name="Financeiro"
+            )
+            summary_df.to_excel(writer, index=False, sheet_name="Resumo")
 
     output.seek(0)
-    filename = f"relatorio_paciente_{patient_id}_{start_date}_{end_date}.xlsx"
+    filename = f"relatorio_{selected_type}_{patient_id}_{start_date}_{end_date}.xlsx"
     return output, filename
 
 
 def generate_financial_pdf(patient_id: str, start_date: str, end_date: str) -> tuple[BytesIO, str]:
     patient = _fetch_patient(patient_id)
     entries = _fetch_financial_entries(patient_id, start_date, end_date)
-
-    logger.info(
-        "Generating financial PDF report for patient=%s period=%s..%s (entries=%s)",
-        patient_id,
-        start_date,
-        end_date,
-        len(entries),
-    )
-
-    balance_amount = sum(float(entry.get("valor") or 0) for entry in entries)
-    particular_entries = [
-        entry for entry in entries if str(entry.get("forma_atendimento") or "particular").strip().lower() != "convenio"
-    ]
-    convenio_entries = [
-        entry for entry in entries if str(entry.get("forma_atendimento") or "particular").strip().lower() == "convenio"
-    ]
-    paid_amount = sum(
-        float(entry.get("valor") or 0)
-        for entry in particular_entries
-        if str(entry.get("status") or "").strip().lower() == "pago"
-    )
-    pending_amount = sum(
-        abs(float(entry.get("valor") or 0))
-        for entry in particular_entries
-        if str(entry.get("status") or "").strip().lower() == "pendente"
-    )
-    overdue_amount = sum(
-        abs(float(entry.get("valor") or 0))
-        for entry in particular_entries
-        if str(entry.get("status") or "").strip().lower() == "atrasado"
-    )
-
-    status_totals: dict[str, int] = {}
-    for entry in entries:
-        status = _safe_value(entry.get("status"))
-        status_totals[status] = status_totals.get(status, 0) + 1
+    summary = _financial_summary(entries)
 
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
@@ -435,45 +506,34 @@ def generate_financial_pdf(patient_id: str, start_date: str, end_date: str) -> t
 
     section_title("Paciente e Periodo")
     line(f"Paciente: {_safe_value(patient.get('nome'))}")
+    line(f"CPF: {_format_cpf(patient.get('cpf'))}")
     line(f"Periodo: {start_date} ate {end_date}")
     y -= 6
 
     section_title("Resumo Financeiro")
     line(f"Total de lancamentos: {len(entries)}")
-    line(f"Saldo atual: R$ {balance_amount:.2f}")
-    line(f"Lancamentos Particular: {len(particular_entries)}")
-    line(f"Lancamentos Convenio: {len(convenio_entries)}")
-    line(f"Valor pago: R$ {paid_amount:.2f}")
-    line(f"Pendencias: R$ {pending_amount:.2f}")
-    line(f"Atrasos: R$ {overdue_amount:.2f}")
-    if status_totals:
-        line(
-            "Status: "
-            + " | ".join([f"{status}: {count}" for status, count in sorted(status_totals.items())])
-        )
+    line(f"Saldo atual: {_money(summary['balance'])}")
+    line(f"Valor pago: {_money(summary['total_paid'])}")
+    line(f"Pendencias: {_money(summary['total_pending'])}")
+    line(f"Atrasos: {_money(summary['total_overdue'])}")
+    line(f"Convenio: {_money(summary['total_convenio'])}")
+    line(f"Particular: {_money(summary['total_particular'])}")
     y -= 6
 
     section_title("Pagamentos no Periodo")
     if not entries:
         line("Nenhum pagamento encontrado no periodo selecionado.")
-    else:
-        for entry in entries:
-            entry_care_type = str(entry.get("forma_atendimento") or "particular").strip().lower()
-            entry_status = "Convenio" if entry_care_type == "convenio" else _safe_value(entry.get("status"))
-            line(
-                f"- Data: {_safe_value(entry.get('data'))} | Valor: R$ {float(entry.get('valor') or 0):.2f} | Status: {entry_status}",
-                indent=10,
-            )
-            line(
-                f"  Tipo: {_safe_value(entry.get('transaction_type') or 'payment')} | Atendimento: {'Convenio' if entry_care_type == 'convenio' else 'Particular'}",
-                indent=10,
-            )
-            line(f"  Metodo: {_safe_value(entry.get('metodo_pagamento'))}", indent=10)
-            line(f"  Convenio: {_safe_value(entry.get('convenio_nome'))}", indent=10)
-            line(f"  Plano: {_safe_value(entry.get('plano_convenio'))}", indent=10)
-            line(f"  Observacoes: {_safe_value(entry.get('observacoes'))}", indent=10)
-            line(f"  Data de registro: {_safe_value(entry.get('created_at'))}", indent=10)
-            y -= 4
+    for entry in entries:
+        line(
+            f"- Data: {_safe_value(entry.get('data'))} | Valor: {_money(entry.get('valor'))} | Status: {_safe_value(entry.get('status'))}",
+            indent=10,
+        )
+        line(f"  Atendimento: {_care_type_label(entry.get('forma_atendimento'))}", indent=10)
+        line(f"  Metodo: {_safe_value(entry.get('metodo_pagamento'))}", indent=10)
+        line(f"  Convenio: {_safe_value(entry.get('convenio_nome'))}", indent=10)
+        line(f"  Plano: {_safe_value(entry.get('plano_convenio'))}", indent=10)
+        line(f"  Observacoes: {_safe_value(entry.get('observacoes'))}", indent=10)
+        y -= 4
 
     pdf.save()
     buffer.seek(0)
@@ -485,41 +545,25 @@ def generate_financial_excel(patient_id: str, start_date: str, end_date: str) ->
     patient = _fetch_patient(patient_id)
     entries = _fetch_financial_entries(patient_id, start_date, end_date)
 
-    logger.info(
-        "Generating financial Excel report for patient=%s period=%s..%s (entries=%s)",
-        patient_id,
-        start_date,
-        end_date,
-        len(entries),
-    )
+    rows = [
+        {
+            "Paciente": _safe_value(patient.get("nome")),
+            "CPF": _format_cpf(patient.get("cpf")),
+            "Data": _safe_value(entry.get("data")),
+            "Valor": float(entry.get("valor") or 0),
+            "Tipo": _safe_value(entry.get("transaction_type") or "payment"),
+            "Forma de Atendimento": _care_type_label(entry.get("forma_atendimento")),
+            "Status": _safe_value(entry.get("status")),
+            "Metodo de Pagamento": _safe_value(entry.get("metodo_pagamento")),
+            "Convenio": _safe_value(entry.get("convenio_nome")),
+            "Plano": _safe_value(entry.get("plano_convenio")),
+            "Observacoes": _safe_value(entry.get("observacoes")),
+            "Data do Registro": _safe_value(entry.get("created_at")),
+        }
+        for entry in entries
+    ]
 
-    rows: list[dict[str, Any]] = []
-    for entry in entries:
-        care_type = str(entry.get("forma_atendimento") or "particular").strip().lower()
-        is_convenio = care_type == "convenio"
-        rows.append(
-            {
-                "Paciente": _safe_value(patient.get("nome")),
-                "Data": _safe_value(entry.get("data")),
-                "Valor": float(entry.get("valor") or 0),
-                "Tipo": _safe_value(entry.get("transaction_type") or "payment"),
-                "Forma de Atendimento": "Convenio" if is_convenio else "Particular",
-                "Status": "Convenio" if is_convenio else _safe_value(entry.get("status")),
-                "Metodo de Pagamento": _safe_value(entry.get("metodo_pagamento")),
-                "Convenio": _safe_value(entry.get("convenio_nome")),
-                "Plano": _safe_value(entry.get("plano_convenio")),
-                "Observacoes": _safe_value(entry.get("observacoes")),
-                "Data do Registro": _safe_value(entry.get("created_at")),
-            }
-        )
-
-    if rows:
-        financial_df = pd.DataFrame(rows).sort_values(by=["Data"], na_position="last")
-    else:
-        financial_df = pd.DataFrame(
-            [{"Mensagem": "Nenhum pagamento encontrado no periodo selecionado."}]
-        )
-
+    financial_df = pd.DataFrame(rows or [{"Mensagem": "Nenhum pagamento encontrado no periodo selecionado."}])
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         financial_df.to_excel(writer, index=False, sheet_name="Relatorio Financeiro")

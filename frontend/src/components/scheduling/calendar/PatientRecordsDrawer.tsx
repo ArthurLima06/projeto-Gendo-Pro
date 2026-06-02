@@ -11,11 +11,13 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDatePtBr } from "@/components/scheduling/calendar/calendarUtils";
+import { formatCpf } from "@/services/patientsService";
 import type { MedicalRecord } from "@/services/recordsService";
 
 interface PatientRecordsDrawerProps {
   open: boolean;
   patientName: string;
+  patientCpf?: string | null;
   isLoading: boolean;
   records: MedicalRecord[];
   onOpenChange: (open: boolean) => void;
@@ -24,6 +26,7 @@ interface PatientRecordsDrawerProps {
 const PatientRecordsDrawer = ({
   open,
   patientName,
+  patientCpf,
   isLoading,
   records,
   onOpenChange,
@@ -36,6 +39,7 @@ const PatientRecordsDrawer = ({
             <SheetTitle className="text-base">Prontuario rapido</SheetTitle>
             <SheetDescription>
               Historico clinico de {patientName || "paciente selecionado"}.
+              {patientCpf ? ` CPF ${formatCpf(patientCpf)}.` : ""}
             </SheetDescription>
           </SheetHeader>
 

@@ -33,7 +33,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   deletePatient as deletePatientApi,
+  formatCpf,
   getPatients,
+  isValidCpf,
+  normalizeCpf,
   updatePatient as updatePatientApi,
   type Patient,
 } from "@/services/patientsService";
@@ -42,6 +45,7 @@ import { formatCep, lookupCep, normalizeCep } from "@/services/cepService";
 
 interface PatientEditForm {
   name: string;
+  cpf: string;
   age: string;
   school: string;
   responsible: string;
@@ -60,6 +64,7 @@ interface PatientEditForm {
 
 const emptyEditForm: PatientEditForm = {
   name: "",
+  cpf: "",
   age: "",
   school: "",
   responsible: "",
@@ -153,6 +158,8 @@ const PatientList = () => {
     const q = search.toLowerCase();
     return (
       patient.name.toLowerCase().includes(q) ||
+      (patient.cpf ? formatCpf(patient.cpf).toLowerCase().includes(q) : false) ||
+      (patient.cpf || "").toLowerCase().includes(q) ||
       (patient.phone || "").toLowerCase().includes(q) ||
       (patient.email || "").toLowerCase().includes(q)
     );
@@ -163,6 +170,7 @@ const PatientList = () => {
     setEditPatient(patient);
     setEditForm({
       name: patient.name || "",
+      cpf: patient.cpf ? formatCpf(patient.cpf) : "",
       age: patient.age || "",
       school: patient.school || "",
       responsible: patient.responsible || "",
@@ -183,10 +191,18 @@ const PatientList = () => {
 
   const handleSave = async () => {
     if (!isAdmin || !editPatient) return;
-    if (!editForm.name.trim() || !editForm.email.trim()) {
+    if (!editForm.name.trim() || !editForm.cpf.trim() || !editForm.email.trim()) {
       toast({
         title: "Erro",
         description: "Preencha todos os campos obrigatorios.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!isValidCpf(editForm.cpf)) {
+      toast({
+        title: "CPF invalido",
+        description: "Informe um CPF valido para continuar.",
         variant: "destructive",
       });
       return;
@@ -213,6 +229,7 @@ const PatientList = () => {
     try {
       const payload = {
         name: editForm.name.trim(),
+        cpf: normalizeCpf(editForm.cpf),
         age: editForm.age.trim(),
         school: editForm.school.trim(),
         responsible: editForm.responsible.trim(),
@@ -290,12 +307,12 @@ const PatientList = () => {
         <CardContent className="p-0">
           {isLoading ? (
             <TableSkeleton
-              columns={isAdmin ? 13 : 4}
+              columns={isAdmin ? 14 : 5}
               rows={6}
               headers={
                 isAdmin
-                  ? ["Nome", "Atendimento", "Idade", "Profissao", "Responsavel", "Telefone", "E-mail", "CEP", "Endereco", "Numero", "Bairro", "Cidade", "Acoes"]
-                  : ["Nome", "Telefone", "E-mail", "Atendimento"]
+                  ? ["Nome", "CPF", "Atendimento", "Idade", "Profissao", "Responsavel", "Telefone", "E-mail", "CEP", "Endereco", "Numero", "Bairro", "Cidade", "Acoes"]
+                  : ["Nome", "CPF", "Atendimento", "Telefone", "E-mail"]
               }
             />
           ) : loadError ? (
@@ -315,6 +332,7 @@ const PatientList = () => {
                   <TableHeader>
                     <TableRow className="bg-muted/50 hover:bg-muted/50">
                       <TableHead className="text-xs uppercase tracking-wider font-medium">Nome</TableHead>
+                      <TableHead className="text-xs uppercase tracking-wider font-medium">CPF</TableHead>
                       <TableHead className="text-xs uppercase tracking-wider font-medium">Atendimento</TableHead>
                       {isAdmin && <TableHead className="text-xs uppercase tracking-wider font-medium">Idade</TableHead>}
                       {isAdmin && <TableHead className="text-xs uppercase tracking-wider font-medium">Profissao</TableHead>}
@@ -335,6 +353,7 @@ const PatientList = () => {
                     {filtered.map((patient) => (
                       <TableRow key={patient.id} className="hover:bg-muted/30 transition-colors">
                         <TableCell className="font-medium">{patient.name}</TableCell>
+                        <TableCell className="text-muted-foreground tabular-nums">{patient.cpf ? formatCpf(patient.cpf) : "-"}</TableCell>
                         <TableCell className="text-muted-foreground">
                           {patient.careType === "convenio"
                             ? `${patient.agreementName || "Convenio"}${patient.agreementPlan ? ` - ${patient.agreementPlan}` : ""}`
@@ -385,15 +404,19 @@ const PatientList = () => {
       </Card>
 
       <Dialog open={!!editPatient} onOpenChange={(open) => !open && setEditPatient(null)}>
-        <DialogContent className="sm:max-w-3xl">
+        <DialogContent className="sm:max-w-5xl max-h-[88vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Editar paciente</DialogTitle>
             <DialogDescription>Atualize as informacoes do paciente abaixo.</DialogDescription>
           </DialogHeader>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 py-2">
             <div className="space-y-1.5">
               <Label>Nome completo *</Label>
               <Input value={editForm.name} onChange={(event) => setEditForm((prev) => ({ ...prev, name: event.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>CPF *</Label>
+              <Input inputMode="numeric" value={editForm.cpf} onChange={(event) => setEditForm((prev) => ({ ...prev, cpf: formatCpf(event.target.value) }))} />
             </div>
             <div className="space-y-1.5">
               <Label>Idade</Label>
@@ -425,7 +448,7 @@ const PatientList = () => {
               <Label>Numero</Label>
               <Input value={editForm.number} onChange={(event) => setEditForm((prev) => ({ ...prev, number: event.target.value }))} />
             </div>
-            <div className="space-y-1.5 md:col-span-2">
+            <div className="space-y-1.5 md:col-span-2 xl:col-span-3">
               <Label>Endereco</Label>
               <Input value={editForm.address} onChange={(event) => setEditForm((prev) => ({ ...prev, address: event.target.value }))} />
             </div>
@@ -437,7 +460,7 @@ const PatientList = () => {
               <Label>Cidade</Label>
               <Input value={editForm.city} onChange={(event) => setEditForm((prev) => ({ ...prev, city: event.target.value }))} />
             </div>
-            <div className="space-y-1.5 md:col-span-2">
+            <div className="space-y-1.5 md:col-span-2 xl:col-span-3">
               <Label>Forma de atendimento</Label>
               <RadioGroup
                 value={editForm.careType}
@@ -498,7 +521,7 @@ const PatientList = () => {
                 </div>
               </>
             )}
-            <div className="space-y-1.5 md:col-span-2">
+            <div className="space-y-1.5 md:col-span-2 xl:col-span-3">
               <Label>Observacoes</Label>
               <Textarea rows={3} value={editForm.notes} onChange={(event) => setEditForm((prev) => ({ ...prev, notes: event.target.value }))} />
             </div>

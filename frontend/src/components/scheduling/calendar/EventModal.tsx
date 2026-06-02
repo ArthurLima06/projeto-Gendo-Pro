@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
-import type { Patient } from "@/services/patientsService";
+import { formatCpf, type Patient } from "@/services/patientsService";
 import { formatProfessionalDisplayName, type Professional } from "@/services/professionalsService";
 import type { Agreement } from "@/services/agreementsService";
 import type { Appointment } from "@/stores/appointmentStore";
@@ -166,11 +166,20 @@ const EventModal = ({
   }, [careType, agreementId, agreementPlan, selectedPlans]);
 
   const patientOptions = useMemo(() => {
-    const names = new Set(patients.map((item) => item.name));
+    const map = new Map(patients.map((item) => [item.name, item]));
     if (appointment?.patient) {
-      names.add(appointment.patient);
+      map.set(appointment.patient, {
+        id: appointment.patientId || appointment.patient,
+        name: appointment.patient,
+        cpf: appointment.patientCpf,
+        phone: "",
+        email: "",
+        careType: appointment.careType || "particular",
+        createdAt: "",
+        updatedAt: "",
+      });
     }
-    return Array.from(names).sort((a, b) => a.localeCompare(b, "pt-BR"));
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
   }, [patients, appointment]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -247,9 +256,9 @@ const EventModal = ({
                 <SelectValue placeholder="Selecionar paciente" />
               </SelectTrigger>
               <SelectContent>
-                {patientOptions.map((name) => (
-                  <SelectItem key={name} value={name}>
-                    {name}
+                {patientOptions.map((item) => (
+                  <SelectItem key={item.id} value={item.name}>
+                    {item.name}{item.cpf ? ` - CPF ${formatCpf(item.cpf)}` : ""}
                   </SelectItem>
                 ))}
               </SelectContent>

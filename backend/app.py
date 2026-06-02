@@ -57,6 +57,7 @@ def create_app():
     PATIENT_COMMON_FIELDS = {
         "id",
         "name",
+        "cpf",
         "phone",
         "email",
         "careType",
@@ -318,6 +319,43 @@ def create_app():
         if len(cep_digits) != 8:
             abort(400, description="cep invalido. Use 8 digitos.")
         return cep_digits
+
+    def normalize_cpf(value, required=True):
+        if is_blank(value):
+            if required:
+                abort(400, description="CPF e obrigatorio.")
+            return None
+
+        cpf_digits = re.sub(r"\D", "", str(value))
+        if len(cpf_digits) != 11 or cpf_digits == cpf_digits[0] * 11:
+            abort(400, description="CPF invalido.")
+
+        def digit_for(base_digits):
+            total = sum(int(digit) * weight for digit, weight in zip(base_digits, range(len(base_digits) + 1, 1, -1)))
+            remainder = (total * 10) % 11
+            return 0 if remainder == 10 else remainder
+
+        first_digit = digit_for(cpf_digits[:9])
+        second_digit = digit_for(cpf_digits[:10])
+        if first_digit != int(cpf_digits[9]) or second_digit != int(cpf_digits[10]):
+            abort(400, description="CPF invalido.")
+        return cpf_digits
+
+    def ensure_unique_patient_cpf(db, cpf, patient_id=None):
+        if not cpf:
+            return
+        if patient_id:
+            row = db.execute(
+                "SELECT id FROM pacientes WHERE cpf = ? AND id <> ? LIMIT 1",
+                (cpf, patient_id),
+            ).fetchone()
+        else:
+            row = db.execute(
+                "SELECT id FROM pacientes WHERE cpf = ? LIMIT 1",
+                (cpf,),
+            ).fetchone()
+        if row is not None:
+            abort(409, description="Ja existe um paciente cadastrado com este CPF.")
 
     def token_hash(token):
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -609,6 +647,7 @@ def create_app():
         payload = {
             "id": row["id"],
             "name": row["nome"],
+            "cpf": row["cpf"] if "cpf" in columns else None,
             "age": str(age_value) if age_value is not None else None,
             "school": row["escola"],
             "responsible": row["responsavel"],
@@ -648,6 +687,7 @@ def create_app():
             legacy.update(
                 {
                     "idade": payload.get("age"),
+                    "cpf": payload.get("cpf"),
                     "escola": payload.get("school"),
                     "responsavel": payload.get("responsible"),
                     "cep": payload.get("cep"),
@@ -669,7 +709,7 @@ def create_app():
             return None
         return db.execute(
             """
-            SELECT id, nome, forma_atendimento, convenio_id, convenio_nome, plano_convenio
+            SELECT id, nome, cpf, forma_atendimento, convenio_id, convenio_nome, plano_convenio
             FROM pacientes
             WHERE nome = ? COLLATE NOCASE
             LIMIT 1
@@ -682,7 +722,7 @@ def create_app():
             return None
         return db.execute(
             """
-            SELECT id, nome, forma_atendimento, convenio_id, convenio_nome, plano_convenio
+            SELECT id, nome, cpf, forma_atendimento, convenio_id, convenio_nome, plano_convenio
             FROM pacientes
             WHERE id = ?
             LIMIT 1
@@ -878,6 +918,7 @@ def create_app():
             "id": row["id"],
             "patientId": row["paciente_id"] if "paciente_id" in columns else None,
             "patient": row["nome"],
+            "patientCpf": row["cpf"] if "cpf" in columns else None,
             "date": row["data"],
             "time": row["horario"],
             "professional": professional_name,
@@ -926,6 +967,7 @@ def create_app():
             "id": row["id"],
             "patientId": row["paciente_id"] if "paciente_id" in columns else None,
             "patient": patient_name,
+            "patientCpf": row["cpf"] if "cpf" in columns else None,
             "date": row["data"],
             "time": row["hora"] if "hora" in columns else None,
             "reason": reason,
@@ -946,6 +988,7 @@ def create_app():
             "id": row["id"],
             "patientId": row["paciente_id"] if "paciente_id" in columns else None,
             "patient": row["nome"],
+            "patientCpf": row["cpf"] if "cpf" in columns else None,
             "date": row["data"],
             "amount": f"{amount:.2f}",
             "status": row["status"],
@@ -1506,9 +1549,11 @@ def create_app():
             return user
         data = json_payload()
 
-        require_fields(data, ["nome"])
+        require_fields(data, ["nome", "cpf"])
+        cpf_value = normalize_cpf(data.get("cpf"), required=True)
         cep_value = normalize_cep(data.get("cep"))
         db = get_db()
+        ensure_unique_patient_cpf(db, cpf_value)
 
         care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
             db,
@@ -1524,12 +1569,13 @@ def create_app():
         db.execute(
             """
             INSERT INTO pacientes
-            (id, nome, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, forma_atendimento, convenio_id, convenio_nome, plano_convenio, observacoes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, nome, cpf, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, forma_atendimento, convenio_id, convenio_nome, plano_convenio, observacoes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
                 data.get("nome"),
+                cpf_value,
                 data.get("idade"),
                 data.get("escola"),
                 data.get("responsavel"),
@@ -1577,6 +1623,7 @@ def create_app():
 
         allowed_columns = [
             "nome",
+            "cpf",
             "idade",
             "escola",
             "responsavel",
@@ -1608,6 +1655,9 @@ def create_app():
             abort(400, description="Nenhum campo vÃ¡lido para atualizaÃ§Ã£o.")
         if "cep" in updates:
             updates["cep"] = normalize_cep(updates.get("cep"))
+        if "cpf" in updates:
+            updates["cpf"] = normalize_cpf(updates.get("cpf"), required=True)
+            ensure_unique_patient_cpf(db, updates["cpf"], paciente_id)
         updates["updated_at"] = now_utc_iso()
 
         set_clause = ", ".join(f"{col} = ?" for col in updates)
@@ -1651,7 +1701,8 @@ def create_app():
         if not isinstance(user, dict):
             return user
         data = json_payload()
-        require_fields(data, ["name", "phone", "email", "careType"])
+        require_fields(data, ["name", "cpf", "phone", "email", "careType"])
+        cpf_value = normalize_cpf(data.get("cpf"), required=True)
         age_value = data.get("age")
         if age_value is not None and age_value != "":
             try:
@@ -1664,6 +1715,7 @@ def create_app():
 
         new_id = str(uuid.uuid4())
         db = get_db()
+        ensure_unique_patient_cpf(db, cpf_value)
         care_type, agreement_id, agreement_name, agreement_plan = resolve_agreement_for_care(
             db,
             data.get("careType"),
@@ -1675,12 +1727,13 @@ def create_app():
         db.execute(
             """
             INSERT INTO pacientes
-            (id, nome, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, forma_atendimento, convenio_id, convenio_nome, plano_convenio, observacoes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, nome, cpf, idade, escola, responsavel, telefone, email, cep, endereco, numero, bairro, cidade, forma_atendimento, convenio_id, convenio_nome, plano_convenio, observacoes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 new_id,
                 data.get("name"),
+                cpf_value,
                 age_value,
                 data.get("school"),
                 data.get("responsible"),
@@ -1712,6 +1765,7 @@ def create_app():
         data = json_payload()
         mapping = {
             "name": "nome",
+            "cpf": "cpf",
             "age": "idade",
             "school": "escola",
             "responsible": "responsavel",
@@ -1740,6 +1794,9 @@ def create_app():
                         value = None
                 if field == "cep":
                     value = normalize_cep(value)
+                if field == "cpf":
+                    value = normalize_cpf(value, required=True)
+                    ensure_unique_patient_cpf(db, value, patient_id)
                 updates.append(f"{column} = ?")
                 params.append(value)
 
@@ -1936,6 +1993,7 @@ def create_app():
             SELECT
                 a.*,
                 p.nome,
+                p.cpf,
                 pr.name AS professional_name,
                 pr.specialty AS professional_specialty
             FROM agenda a
@@ -2016,6 +2074,7 @@ def create_app():
             SELECT
                 a.*,
                 p.nome,
+                p.cpf,
                 pr.name AS professional_name,
                 pr.specialty AS professional_specialty
             FROM agenda a
@@ -2149,6 +2208,7 @@ def create_app():
             SELECT
                 a.*,
                 p.nome,
+                p.cpf,
                 pr.name AS professional_name,
                 pr.specialty AS professional_specialty
             FROM agenda a
@@ -2432,7 +2492,7 @@ def create_app():
         db = get_db()
         rows = db.execute(
             """
-            SELECT f.*, p.nome
+            SELECT f.*, p.nome, p.cpf
             FROM financeiro f
             LEFT JOIN pacientes p ON f.paciente_id = p.id
             ORDER BY f.data DESC
@@ -2450,7 +2510,7 @@ def create_app():
         db = get_db()
         patient_rows = db.execute(
             """
-            SELECT id, nome, forma_atendimento, convenio_id, convenio_nome, plano_convenio
+            SELECT id, nome, cpf, forma_atendimento, convenio_id, convenio_nome, plano_convenio
             FROM pacientes
             ORDER BY nome
             """
@@ -2494,6 +2554,7 @@ def create_app():
                 {
                     "id": patient["id"],
                     "name": patient["nome"],
+                    "cpf": patient["cpf"],
                     "careType": patient["forma_atendimento"] or "particular",
                     "agreementId": patient["convenio_id"],
                     "agreementName": patient["convenio_nome"],
@@ -2525,6 +2586,7 @@ def create_app():
             "patient": {
                 "id": patient["id"],
                 "name": patient["nome"],
+                "cpf": patient["cpf"],
                 "careType": patient["forma_atendimento"] or "particular",
                 "agreementId": patient["convenio_id"],
                 "agreementName": patient["convenio_nome"],
@@ -2656,7 +2718,7 @@ def create_app():
 
         row = db.execute(
             """
-            SELECT f.*, p.nome
+            SELECT f.*, p.nome, p.cpf
             FROM financeiro f
             LEFT JOIN pacientes p ON p.id = f.paciente_id
             WHERE f.id = ?
@@ -2740,7 +2802,7 @@ def create_app():
 
         row = db.execute(
             """
-            SELECT f.*, p.nome
+            SELECT f.*, p.nome, p.cpf
             FROM financeiro f
             LEFT JOIN pacientes p ON f.paciente_id = p.id
             WHERE f.id = ?
@@ -2857,7 +2919,7 @@ def create_app():
 
         row = db.execute(
             """
-            SELECT f.*, p.nome
+            SELECT f.*, p.nome, p.cpf
             FROM financeiro f
             LEFT JOIN pacientes p ON f.paciente_id = p.id
             WHERE f.id = ?
@@ -2969,8 +3031,9 @@ def create_app():
         db = get_db()
         rows = db.execute(
             """
-            SELECT r.*
+            SELECT r.*, p.cpf
             FROM registros r
+            LEFT JOIN pacientes p ON p.id = r.paciente_id
             ORDER BY data DESC, hora DESC
             """
         ).fetchall()
@@ -2990,6 +3053,7 @@ def create_app():
                 r.id,
                 r.paciente_id,
                 r.paciente_nome,
+                p.cpf,
                 r.data,
                 r.hora,
                 r.observacoes,
@@ -2999,6 +3063,7 @@ def create_app():
                 NULL AS evolucao,
                 NULL AS professional_name
             FROM registros r
+            LEFT JOIN pacientes p ON p.id = r.paciente_id
             WHERE r.paciente_id = ?
             """,
             (patient_id,),
@@ -3009,6 +3074,7 @@ def create_app():
                 s.id,
                 s.paciente_id,
                 p.nome AS paciente_nome,
+                p.cpf,
                 s.data,
                 '' AS hora,
                 s.observacoes,
@@ -3674,6 +3740,7 @@ def create_app():
             SELECT
                 a.*,
                 p.nome,
+                p.cpf,
                 pr.name AS professional_name,
                 pr.specialty AS professional_specialty
             FROM agenda a
@@ -3688,7 +3755,7 @@ def create_app():
 
         payments_rows = db.execute(
             """
-            SELECT f.*, p.nome
+            SELECT f.*, p.nome, p.cpf
             FROM financeiro f
             LEFT JOIN pacientes p ON f.paciente_id = p.id
             ORDER BY f.data DESC

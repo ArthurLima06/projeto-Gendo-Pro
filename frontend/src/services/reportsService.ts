@@ -3,11 +3,14 @@ const BASE_URL = "/api";
 export interface DateRangeReportParams {
   startDate: string;
   endDate: string;
+  reportType?: ReportType;
 }
 
 export interface ReportDownloadParams extends DateRangeReportParams {
   patientId: string;
 }
+
+export type ReportType = "general" | "records" | "patient_data" | "appointments";
 
 interface ApiErrorPayload {
   error?: {
@@ -20,6 +23,9 @@ function buildReportUrl(path: string, params: DateRangeReportParams): string {
     start_date: params.startDate,
     end_date: params.endDate,
   });
+  if (params.reportType) {
+    query.set("report_type", params.reportType);
+  }
   return `${BASE_URL}${path}?${query.toString()}`;
 }
 

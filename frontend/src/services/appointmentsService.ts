@@ -4,6 +4,7 @@ export interface Appointment {
   id: string;
   patientId?: string | null;
   patient: string;
+  patientCpf?: string | null;
   date: string;
   time: string;
   professional: string;

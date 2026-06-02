@@ -49,6 +49,10 @@ def _parse_date_range() -> tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
+def _parse_report_type() -> str:
+    return (request.args.get("report_type") or "general").strip().lower()
+
+
 def _require_admin_user():
     current_user = getattr(g, "current_user", None)
     if not isinstance(current_user, dict):
@@ -62,7 +66,7 @@ def _require_admin_user():
 def get_patient_pdf_report(patient_id: str):
     try:
         start_date, end_date = _parse_date_range()
-        report_stream, filename = generate_patient_pdf(patient_id, start_date, end_date)
+        report_stream, filename = generate_patient_pdf(patient_id, start_date, end_date, _parse_report_type())
     except ValueError as exc:
         return _error_response(400, "INVALID_DATE_RANGE", str(exc))
     except PatientNotFoundError as exc:
@@ -85,7 +89,7 @@ def get_patient_pdf_report(patient_id: str):
 def get_patient_excel_report(patient_id: str):
     try:
         start_date, end_date = _parse_date_range()
-        report_stream, filename = generate_patient_excel(patient_id, start_date, end_date)
+        report_stream, filename = generate_patient_excel(patient_id, start_date, end_date, _parse_report_type())
     except ValueError as exc:
         return _error_response(400, "INVALID_DATE_RANGE", str(exc))
     except PatientNotFoundError as exc:

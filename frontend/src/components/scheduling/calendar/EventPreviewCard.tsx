@@ -1,6 +1,7 @@
 import { Pencil, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatDatePtBr } from "@/components/scheduling/calendar/calendarUtils";
+import { formatCpf } from "@/services/patientsService";
 import type { Appointment } from "@/stores/appointmentStore";
 
 interface EventPreviewCardProps {
@@ -51,6 +52,9 @@ const EventPreviewCard = ({
     >
       <div className="space-y-2">
         <h4 className="text-sm font-semibold leading-tight">{appointment.patient || "Paciente nao informado"}</h4>
+        {appointment.patientCpf && (
+          <p className="text-xs text-muted-foreground tabular-nums">CPF {formatCpf(appointment.patientCpf)}</p>
+        )}
         <p className="text-xs text-muted-foreground">
           {formatDatePtBr(appointment.date)} as {appointment.time} ({durationMinutes} min)
         </p>
